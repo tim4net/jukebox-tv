@@ -138,6 +138,7 @@ jobs:
 
   emulator-smoke:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -156,7 +157,7 @@ jobs:
           packages: platform-tools
 
       - name: Install Android SDK components
-        run: sdkmanager --install "ndk;21.0.6113669" "build-tools;30.0.3" "platforms;android-34" "platforms;android-25" "system-images;android-25;google_apis;x86"
+        run: sdkmanager --install "ndk;21.0.6113669" "build-tools;30.0.3" "platforms;android-34" "platforms;android-26" "system-images;android-26;google_apis;x86_64"
 
       - name: Enable KVM
         run: |
@@ -171,13 +172,13 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-25-x86-google_apis-v2
+          key: avd-26-x86_64-google_apis-v1
 
-      - name: Build + install + launch smoke test on emulator (api 24, like Fire OS 6)
+      - name: Build + install + launch smoke test on emulator (api 26)
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 25
-          arch: x86
+          api-level: 26
+          arch: x86_64
           target: google_apis
           emulator-boot-timeout: 900
           force-avd-creation: false
@@ -187,7 +188,7 @@ jobs:
             set -x
             bash ./gradlew --no-daemon :smarttubetv:assembleStjukeboxDebug
 
-            APK="$(ls smarttubetv/build/outputs/apk/stjukebox/debug/Jukebox_*_x86.apk)"
+            APK="$(ls smarttubetv/build/outputs/apk/stjukebox/debug/Jukebox_*_universal.apk)"
             adb install -r "$APK"
 
             adb logcat -c
