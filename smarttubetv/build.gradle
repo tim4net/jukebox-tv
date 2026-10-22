@@ -285,5 +285,8 @@ dependencies {
     // ByeByeDPI fix
     implementation 'org.conscrypt:conscrypt-android:' + conscryptVersion
 
+    // Jukebox: QR code rendering for the join screen (stjukebox flavor only)
+    stjukeboxImplementation 'com.google.zxing:core:3.3.3'
+
     implementation 'androidx.work:work-runtime:' + workVersion
 }

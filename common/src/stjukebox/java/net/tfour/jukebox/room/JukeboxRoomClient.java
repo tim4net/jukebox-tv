@@ -1,0 +1,413 @@
+package net.tfour.jukebox.room;
+
+import java.io.IOException;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
+import java.util.Set;
+
+/**
+ * Jukebox room state machine, independent of any concrete networking stack (see
+ * {@link Transport}, {@link Http}) or timing facility (see {@link Scheduler}), so it can
+ * be driven synchronously from unit tests.
+ *
+ * Room order is strict: the TV opens each song itself whenever the server sends "play";
+ * a "play" for the songId that is already current never re-opens the video.
+ */
+public class JukeboxRoomClient {
+    public interface Transport {
+        void connect(String url, Callbacks cb);
+        boolean send(String text);
+        void close();
+
+        interface Callbacks {
+            void onOpen();
+            void onMessage(String text);
+            void onClosed();
+            void onFailure(Throwable error);
+        }
+    }
+
+    public interface Http {
+        String postJson(String url, String body) throws IOException;
+        String get(String url) throws IOException;
+    }
+
+    public interface Scheduler {
+        void schedule(Runnable r, long delayMs);
+        void cancelAll();
+    }
+
+    /** Tiny key/value persistence. A null value removes the key. */
+    public interface Store {
+        String get(String key);
+        void put(String key, String value);
+    }
+
+    public interface Listener {
+        void onRoomReady(String room, String code, String joinUrl);
+        void onPlay(String songId, String videoId, String title);
+        void onStatus(String status);
+        void onState(String nowPlayingTitle, int listeners);
+    }
+
+    /** Thrown by {@link Http} implementations for non-2xx HTTP responses. */
+    public static class HttpStatusException extends IOException {
+        public final int code;
+
+        public HttpStatusException(int code) {
+            super("HTTP " + code);
+            this.code = code;
+        }
+    }
+
+    private static final String KEY_ROOM = "room";
+    private static final String KEY_CODE = "code";
+    private static final long PING_INTERVAL_MS = 25_000;
+    private static final long INITIAL_BACKOFF_MS = 1_000;
+    private static final long MAX_BACKOFF_MS = 30_000;
+    private static final int MAX_REMEMBERED_SONGS = 64;
+
+    private final String mOrigin;
+    private final Transport mTransport;
+    private final Http mHttp;
+    private final Scheduler mScheduler;
+    private final Store mStore;
+    private final Listener mListener;
+    private final String mToken;
+
+    private final Runnable mPingRunnable = new Runnable() {
+        @Override
+        public void run() {
+            synchronized (JukeboxRoomClient.this) {
+                if (mRunning && mConnected && mTransport.send(JukeboxProtocol.ping(System.currentTimeMillis()))) {
+                    mScheduler.schedule(this, PING_INTERVAL_MS);
+                }
+            }
+        }
+    };
+    private final Runnable mReconnectRunnable = new Runnable() {
+        @Override
+        public void run() {
+            synchronized (JukeboxRoomClient.this) {
+                if (mRunning) {
+                    connectSocket();
+                }
+            }
+        }
+    };
+    private final Runnable mSetupRetryRunnable = new Runnable() {
+        @Override
+        public void run() {
+            synchronized (JukeboxRoomClient.this) {
+                if (mRunning) {
+                    setupRoom();
+                }
+            }
+        }
+    };
+
+    private boolean mRunning;
+    private boolean mConnected;
+    private boolean mSocketDone;
+    private int mGeneration;
+    private long mBackoffMs = INITIAL_BACKOFF_MS;
+    private String mRoom;
+    private String mCode;
+    private String mLastStatus;
+    private String mCurrentSongId;
+    private String mCurrentVideoId;
+    private final Set<String> mNextSentSongIds = new LinkedHashSet<>();
+    private String mPendingEndSongId;
+    private boolean mAwaitPlayAfterReconnect;
+
+    public JukeboxRoomClient(String origin, Transport transport, Http http, Scheduler scheduler,
+                             Store store, Listener listener, String token) {
+        mOrigin = origin;
+        mTransport = transport;
+        mHttp = http;
+        mScheduler = scheduler;
+        mStore = store;
+        mListener = listener;
+        mToken = token;
+    }
+
+    /**
+     * Idempotent. Reuses the saved room when its state check succeeds, otherwise creates
+     * (and saves) a new room, then connects the WebSocket. Network calls run on the
+     * caller's thread; do not call this on the Android main thread.
+     */
+    public synchronized void start() {
+        if (mRunning) {
+            if (mRoom != null) {
+                notifyRoomReadyLocked();
+            }
+            notifyStatusLocked(mConnected ? "Connected" : mLastStatus);
+            return;
+        }
+        mRunning = true;
+        mBackoffMs = INITIAL_BACKOFF_MS;
+        mLastStatus = "Connecting…";
+        mScheduler.cancelAll();
+        setupRoom();
+    }
+
+    /** Closes everything; no reconnects are scheduled afterwards. */
+    public synchronized void stop() {
+        mRunning = false;
+        mGeneration++;
+        mSocketDone = true;
+        mConnected = false;
+        mScheduler.cancelAll();
+        mTransport.close();
+        notifyStatusLocked("Stopped");
+    }
+
+    /**
+     * Reports that the current song ended. Only acts when videoId matches the current
+     * song's videoId and "next" hasn't been sent for it yet. If the socket is down, the
+     * ended songId is remembered and "next" is sent after reconnect when the server's
+     * post-ack "play" is still for that same songId. Never sends "next" twice per songId.
+     */
+    public synchronized void songEnded(String videoId) {
+        if (!mRunning || mCurrentSongId == null) {
+            return;
+        }
+        if (videoId == null || !videoId.equals(mCurrentVideoId)) {
+            return;
+        }
+        if (mNextSentSongIds.contains(mCurrentSongId)) {
+            return;
+        }
+        if (!sendNextLocked(mCurrentSongId)) {
+            mPendingEndSongId = mCurrentSongId;
+        }
+    }
+
+    /** Reports playback state; ignored unless videoId equals the current song's videoId. */
+    public synchronized void reportPlaying(String videoId, Integer durationSec, Integer positionSec, String state) {
+        if (!mRunning || mCurrentSongId == null || videoId == null) {
+            return;
+        }
+        if (!videoId.equals(mCurrentVideoId)) {
+            return;
+        }
+        mTransport.send(JukeboxProtocol.playing(mToken, mCurrentSongId, durationSec, positionSec, state));
+    }
+
+    public synchronized boolean isConnected() {
+        return mConnected;
+    }
+
+    // Internal machinery. Everything below expects the instance lock to be held.
+
+    private void setupRoom() {
+        if (!mRunning) {
+            return;
+        }
+        String room = mStore.get(KEY_ROOM);
+        String code = mStore.get(KEY_CODE);
+        if (room != null && room.trim().isEmpty()) {
+            room = null;
+        }
+        if (room != null) {
+            try {
+                String state = mHttp.get(mOrigin + "/api/r/" + room + "/state");
+                if (JukeboxProtocol.isClosedState(state)) {
+                    room = null;
+                }
+            } catch (HttpStatusException e) {
+                if (e.code == 404 || e.code == 410) {
+                    room = null; // the server proved the room is gone
+                }
+            } catch (IOException e) {
+                // Network failure without a verdict: keep the saved room and let the
+                // WebSocket connection (and its backoff reconnects) sort it out.
+            }
+        }
+        if (room == null) {
+            try {
+                String created = mHttp.postJson(mOrigin + "/api/rooms", "{}");
+                String[] roomAndCode = JukeboxProtocol.parseRoomCreated(created);
+                if (roomAndCode == null) {
+                    throw new IOException("Malformed create-room response");
+                }
+                room = roomAndCode[0];
+                code = roomAndCode[1];
+                mStore.put(KEY_ROOM, room);
+                mStore.put(KEY_CODE, code);
+            } catch (IOException | RuntimeException e) {
+                scheduleRetryLocked(mSetupRetryRunnable);
+                return;
+            }
+        }
+        mRoom = room;
+        mCode = code;
+        notifyRoomReadyLocked();
+        connectSocket();
+    }
+
+    private void connectSocket() {
+        if (!mRunning || mRoom == null) {
+            return;
+        }
+        final int generation = ++mGeneration;
+        mSocketDone = false;
+        mConnected = false;
+        notifyStatusLocked("Connecting…");
+        mTransport.connect(webSocketUrlLocked(), new Transport.Callbacks() {
+            @Override
+            public void onOpen() {
+                synchronized (JukeboxRoomClient.this) {
+                    if (generation == mGeneration) {
+                        socketOpenedLocked();
+                    }
+                }
+            }
+
+            @Override
+            public void onMessage(String text) {
+                synchronized (JukeboxRoomClient.this) {
+                    if (generation == mGeneration) {
+                        handleMessageLocked(text);
+                    }
+                }
+            }
+
+            @Override
+            public void onClosed() {
+                socketClosed(generation);
+            }
+
+            @Override
+            public void onFailure(Throwable error) {
+                socketClosed(generation);
+            }
+        });
+    }
+
+    private void socketOpenedLocked() {
+        mConnected = true;
+        mBackoffMs = INITIAL_BACKOFF_MS;
+        notifyStatusLocked("Connected");
+        mTransport.send(JukeboxProtocol.bridgeHello(mToken));
+        mScheduler.cancelAll();
+        mScheduler.schedule(mPingRunnable, PING_INTERVAL_MS);
+        if (mPendingEndSongId != null) {
+            mAwaitPlayAfterReconnect = true;
+        }
+    }
+
+    private void socketClosed(int generation) {
+        synchronized (JukeboxRoomClient.this) {
+            if (generation != mGeneration || mSocketDone) {
+                return;
+            }
+            mSocketDone = true;
+            mConnected = false;
+            scheduleRetryLocked(mReconnectRunnable);
+        }
+    }
+
+    private void scheduleRetryLocked(Runnable retry) {
+        if (!mRunning) {
+            return;
+        }
+        notifyStatusLocked("Reconnecting…");
+        mScheduler.cancelAll();
+        mScheduler.schedule(retry, mBackoffMs);
+        mBackoffMs = Math.min(mBackoffMs * 2, MAX_BACKOFF_MS);
+    }
+
+    private void handleMessageLocked(String text) {
+        JukeboxProtocol.Message message = JukeboxProtocol.parse(text);
+        String type = message.getType();
+        if (JukeboxProtocol.TYPE_PLAY.equals(type)) {
+            handlePlayLocked(message);
+        } else if (JukeboxProtocol.TYPE_STATE.equals(type)) {
+            mListener.onState(message.getNowPlayingTitle(), message.getListeners());
+        } else if (JukeboxProtocol.TYPE_CLOSED.equals(type)) {
+            handleClosedLocked();
+        }
+        // bridge-ack, pong, error and unknown messages need no action.
+    }
+
+    private void handlePlayLocked(JukeboxProtocol.Message message) {
+        String songId = message.getSongId();
+        if (songId == null || !JukeboxProtocol.isValidVideoId(message.getVideoId())) {
+            return; // ignore malformed play messages
+        }
+        if (mAwaitPlayAfterReconnect) {
+            mAwaitPlayAfterReconnect = false;
+            String endedSongId = mPendingEndSongId;
+            mPendingEndSongId = null;
+            if (songId.equals(endedSongId)) {
+                // The server never saw our "next" (socket was down): advance now.
+                sendNextLocked(songId);
+                return;
+            }
+            // Otherwise the server already advanced on its own; drop the pending end.
+        }
+        if (songId.equals(mCurrentSongId)) {
+            return; // deduplicate: never re-open the song that is already current
+        }
+        mCurrentSongId = songId;
+        mCurrentVideoId = message.getVideoId();
+        mListener.onPlay(songId, message.getVideoId(), message.getTitle());
+    }
+
+    private void handleClosedLocked() {
+        mGeneration++; // ignore any further callbacks of the dying socket
+        mSocketDone = true;
+        mConnected = false;
+        mScheduler.cancelAll();
+        mTransport.close();
+        mStore.put(KEY_ROOM, null);
+        mStore.put(KEY_CODE, null);
+        mCurrentSongId = null;
+        mCurrentVideoId = null;
+        mPendingEndSongId = null;
+        mAwaitPlayAfterReconnect = false;
+        if (mRunning) {
+            notifyStatusLocked("Reconnecting…");
+            mScheduler.cancelAll();
+            // We are on the WebSocket thread holding the lock; setupRoom() does blocking
+            // HTTP, so hop to the scheduler thread instead of running it inline.
+            mScheduler.schedule(mSetupRetryRunnable, 0);
+        }
+    }
+
+    private boolean sendNextLocked(String songId) {
+        if (mNextSentSongIds.contains(songId)) {
+            return true; // never send next twice for one songId
+        }
+        if (!mTransport.send(JukeboxProtocol.next(mToken))) {
+            return false;
+        }
+        mNextSentSongIds.add(songId);
+        while (mNextSentSongIds.size() > MAX_REMEMBERED_SONGS) {
+            Iterator<String> it = mNextSentSongIds.iterator();
+            it.next();
+            it.remove();
+        }
+        return true;
+    }
+
+    private String webSocketUrlLocked() {
+        String url = mOrigin;
+        if (url.startsWith("https:")) {
+            url = "wss:" + url.substring("https:".length());
+        } else if (url.startsWith("http:")) {
+            url = "ws:" + url.substring("http:".length());
+        }
+        return url + "/api/r/" + mRoom + "/ws";
+    }
+
+    private void notifyRoomReadyLocked() {
+        mListener.onRoomReady(mRoom, mCode, mOrigin + "/r/" + mRoom);
+    }
+
+    private void notifyStatusLocked(String status) {
+        mLastStatus = status;
+        mListener.onStatus(status);
+    }
+}

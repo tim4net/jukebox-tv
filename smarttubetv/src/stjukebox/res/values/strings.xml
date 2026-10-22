@@ -2,4 +2,9 @@
 <resources>
     <string translatable="false" name="app_name"><![CDATA[Jukebox]]></string>
     <string translatable="false" name="browse_title"><![CDATA[Jukebox]]></string>
+    <string translatable="false" name="jukebox_room_label"><![CDATA[Jukebox Room]]></string>
+    <string translatable="false" name="jukebox_join_hint">Scan, or go to %1$s and enter the code</string>
+    <string translatable="false" name="jukebox_now_playing">Now playing: %1$s</string>
+    <string translatable="false" name="jukebox_browse"><![CDATA[Browse YouTube]]></string>
+    <string translatable="false" name="jukebox_qr_desc"><![CDATA[QR code to join the jukebox room]]></string>
 </resources>

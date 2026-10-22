@@ -11,6 +11,43 @@ weekly upstream merges keep conflicting as little as possible. Prefer new files 
 where an upstream file must be touched (e.g. one registration line), keep the edit to a single,
 easy-to-re-apply hunk.
 
+## Decisions & implementation status
+
+- **DECIDED (open question 1 — queue playback):** the TV opens each song itself in room order.
+  There is no SmartTube `Playlist` mirroring: every server `{"t":"play",...}` message ends in
+  `PlaybackPresenter.openVideo(videoId)`; a `play` for the songId that is already current is
+  deduplicated and never re-opens the video. Upstream auto-advance is simply overwritten by the
+  next room `play`.
+- **DECIDED (open question 2 — song-ended reporting):** song end is reported with the server's
+  existing `{"t":"next","token":T}` message — the server's `next` is the advance primitive and has
+  no `endedAt` field, so no new `{videoId, endedAt}` message exists. Double-advance guard: `next`
+  is sent at most once per songId; if the socket is down when a song ends, the ended songId is
+  remembered and `next` is sent after reconnect only if the server's post-ack `play` is still for
+  that same songId (otherwise the server already advanced and the pending end is dropped).
+- Implemented in `common/src/stjukebox/java/net/tfour/jukebox/room/`: `JukeboxProtocol`
+  (pure JSON encode/decode), `JukeboxRoomClient` (room state machine over injected
+  `Transport`/`Http`/`Scheduler`/`Store` interfaces; ping every 25s; reconnect backoff 1s→30s,
+  reset on open; server `closed` forgets the saved room and starts a new one), `OkHttpTransport`,
+  `OkHttpHttp`, `HandlerScheduler`, `PrefsStore` ("jukebox_room" prefs), `JukeboxRoom`
+  (process-wide singleton; origin/token from `common/src/stjukebox/res/values/jukebox.xml`) and
+  `JukeboxRoomController` (extends `BasePlayerController`, registered through the single guarded
+  hook in `PlaybackPresenter`).
+- **Join screen:** a separate flavor-only launcher activity (`JukeboxJoinActivity` +
+  `jukebox_join.xml` + flavor manifest entry "Jukebox Room", second LAUNCHER/LEANBACK_LAUNCHER
+  entry) instead of the overlay inside `BrowseFragment` sketched in (a) below — keeps upstream
+  browse UI completely untouched. The room keeps running after the activity is left.
+- **Known race (accepted):** upstream autoplay may briefly start a suggestion after a song ends
+  before the room's next `play` arrives — the room play wins (it opens over whatever is playing).
+- **Bridge token (open item):** if the server sets `BRIDGE_TOKEN`, the TV must send it in
+  `bridge-hello`/`next`/`playing`. It is kept in `jukebox_bridge_token` (currently **empty**);
+  a real token must never be committed.
+- Server protocol summary (authoritative copy): create `POST {origin}/api/rooms` →
+  `{"room":"<22-char>","code":"<6-char>"}`; state check `GET {origin}/api/r/{room}/state`;
+  WebSocket `{ws|wss}://.../api/r/{room}/ws`; client sends `bridge-hello`/`next`/`playing`/`ping`;
+  server sends `bridge-ack`, `play` (after ack if something is playing, and after every advance),
+  `state`, `pong`, `error`, `closed`; `videoId` must match `^[A-Za-z0-9_-]{11}$` (others are
+  ignored); phone join URL `{origin}/r/{room}`.
+
 ## (a) QR + 6-letter join-code overlay
 
 - TV idle/browse screen:
@@ -66,10 +103,11 @@ easy-to-re-apply hunk.
   `add(Video)`, `next(Video)`, `addAll(List<Video>)`, `getNext()`, `setCurrent(Video)`, `clear()`.
 - Auto-advance is handled upstream: `VideoLoaderController.onPlayEnd()` calls
   `applyPlaybackMode(...)` (PLAYBACK_MODE_ONE/ALL/SHUFFLE/LIST/CLOSE/PAUSE/REVERSE_LIST) which
-  loads `Playlist.getNext()` via `SuggestionsController.getNext()/getPrevious()`. Strategy: mirror
-  the room queue into `Playlist` (mode ALL) and let upstream do the advancing, or drive
+  loads `Playlist.getNext()` via `SuggestionsController.getNext()/getPrevious()`. ~~Strategy:
+  mirror the room queue into `Playlist` (mode ALL) and let upstream do the advancing, or drive
   `openVideo(videoId)` per song-end ourselves for stricter room ordering — decide after seeing the
-  protocol's ordering guarantees.
+  protocol's ordering guarantees.~~ DECIDED: the TV opens each song itself in room order (see
+  "Decisions & implementation status" above); no `Playlist` mirroring.
 
 ## (d) Song-ended reporting
 
@@ -84,6 +122,8 @@ easy-to-re-apply hunk.
   `getVideo()` / `getPresenter().getVideo()` and send `{videoId, endedAt}` (ISO-8601 UTC or epoch
   ms, per the jukebox.tfour.net schema) on the room WebSocket. The auto-play of the next queue
   item must not be blocked by the report; fire-and-forget with a small retry buffer if offline.
+  ~~send `{videoId, endedAt}`~~ DECIDED: song end is reported with the server's existing
+  `{"t":"next"}` message (see "Decisions & implementation status" above).
 
 ## Build/flavor isolation checklist
 

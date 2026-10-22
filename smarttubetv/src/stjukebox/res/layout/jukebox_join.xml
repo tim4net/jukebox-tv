@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Two-column landscape join screen for 960x540dp TV with 48dp overscan-safe margins:
+     QR on the left, title/code/hint/now-playing/status/browse stacked on the right. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0e0f13"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:padding="48dp">
+
+    <ImageView
+        android:id="@+id/jukebox_qr"
+        android:layout_width="300dp"
+        android:layout_height="300dp"
+        android:background="#ffffff"
+        android:padding="10dp"
+        android:contentDescription="@string/jukebox_qr_desc"
+        android:scaleType="fitCenter" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:layout_marginStart="48dp"
+        android:orientation="vertical"
+        android:gravity="center_horizontal">
+
+        <TextView
+            android:id="@+id/jukebox_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textColor="#ffffff"
+            android:textSize="40sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/jukebox_code"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:fontFamily="monospace"
+            android:letterSpacing="0.3"
+            android:textColor="#ffffff"
+            android:textSize="64sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/jukebox_hint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:gravity="center"
+            android:textColor="#b0b0b8"
+            android:textSize="20sp" />
+
+        <TextView
+            android:id="@+id/jukebox_now_playing"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:textColor="#e0e0e6"
+            android:textSize="20sp" />
+
+        <TextView
+            android:id="@+id/jukebox_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textColor="#66a577"
+            android:textSize="16sp" />
+
+        <Button
+            android:id="@+id/jukebox_browse"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:minHeight="48dp"
+            android:focusable="true"
+            android:paddingStart="32dp"
+            android:paddingEnd="32dp"
+            android:text="@string/jukebox_browse"
+            android:textSize="20sp">
+            <requestFocus />
+        </Button>
+    </LinearLayout>
+</LinearLayout>
