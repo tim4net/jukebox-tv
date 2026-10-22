@@ -156,7 +156,7 @@ jobs:
           packages: platform-tools
 
       - name: Install Android SDK components
-        run: sdkmanager --install "ndk;21.0.6113669" "build-tools;30.0.3" "platforms;android-34" "platforms;android-24" "system-images;android-24;default;x86_64"
+        run: sdkmanager --install "ndk;21.0.6113669" "build-tools;30.0.3" "platforms;android-34" "platforms;android-25" "system-images;android-25;google_apis;x86"
 
       - name: Enable KVM
         run: |
@@ -171,14 +171,15 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-24-x86_64-default-v2
+          key: avd-25-x86-google_apis-v2
 
       - name: Build + install + launch smoke test on emulator (api 24, like Fire OS 6)
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 24
-          arch: x86_64
-          target: default
+          api-level: 25
+          arch: x86
+          target: google_apis
+          emulator-boot-timeout: 900
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           disable-animations: true
