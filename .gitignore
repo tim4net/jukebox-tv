@@ -79,3 +79,4 @@ hs_err_pid*.log
 /.review-agy.md
 /.review-resolution.diff
 /.review-resolution.diff.trunc
+/.review-agy*.txt
