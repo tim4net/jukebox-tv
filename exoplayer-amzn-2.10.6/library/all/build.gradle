@@ -35,6 +35,7 @@ android {
     productFlavors {
         stbeta {}
         ststable {}
+        stjukebox {}
         stfdroid {}
     }
 }

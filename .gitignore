@@ -71,3 +71,11 @@ tmp/
 fabric.properties
 *BAK.java
 hs_err_pid*.log
+
+# upstream-merge script scratch files (repo root)
+/upstream-merge.log
+/.glm-merge-prompt.md
+/.review-prompt.md
+/.review-agy.md
+/.review-resolution.diff
+/.review-resolution.diff.trunc

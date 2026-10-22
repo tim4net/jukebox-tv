@@ -37,6 +37,8 @@ android {
     productFlavors {
         stbeta {}
         ststable {}
+        // Jukebox: matchingFallbacks covers submodule deps (youtubeapi) that lack this flavor
+        stjukebox { matchingFallbacks = ['ststable'] }
         stfdroid {}
     }
 }

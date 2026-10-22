@@ -47,6 +47,8 @@ android {
     productFlavors {
         stbeta {}
         ststable {}
+        // Jukebox: matchingFallbacks covers submodule deps (appupdatechecker2, youtubeapi) that lack this flavor
+        stjukebox { matchingFallbacks = ['ststable'] }
         stfdroid {}
     }
 }
@@ -57,6 +59,10 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:' + appCompatXVersion
     testImplementation 'junit:junit:' + junitVersion
     testImplementation 'org.robolectric:robolectric:' + robolectricVersion
+    // Jukebox: tests run under JDK 17 where Robolectric 4.6.1 (pinned in SharedModules
+    // constants.gradle) fails with "Unsupported class file major version 61" (ASM too old).
+    // Upgrade Robolectric for the stjukebox flavor unit tests only.
+    testStjukeboxImplementation 'org.robolectric:robolectric:4.11.1'
 
     implementation project(':sharedutils')
     implementation project(':fragment-1.1.0')

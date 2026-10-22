@@ -44,6 +44,7 @@ android {
     productFlavors {
         stbeta {}
         ststable {}
+        stjukebox { matchingFallbacks = ['ststable'] } // youtubeapi is a submodule without this flavor
         stfdroid {}
     }
 }

@@ -1,0 +1,57 @@
+### Verification of Prior Finding (`.review-agy2.md`)
+
+- **Unsafe tool execution via `--dangerously-skip-permissions` in [`scripts/upstream-merge.sh`](file:///home/box/src/jukebox-tv/scripts/upstream-merge.sh#L569-L589)**: **FIXED**
+  - `--dangerously-skip-permissions` has been completely removed from the `agy` invocation.
+  - `agy` is now executed inside an isolated, empty temporary directory (`AGY_SANDBOX="$(mktemp -d)"`) with no access to repository files or tools.
+  - Stdin is redirected from `/dev/null` (`</dev/null`), ensuring any interactive permission prompts are rejected rather than auto-approved.
+  - Failure or timeout handling correctly sets `GATE_AGY=fail` when `agy` exits non-zero or times out, and the temporary sandbox directory is cleaned up with `rm -rf "$AGY_SANDBOX"`.
+
+---
+
+### High Severity (Blocking)
+
+1. **Untracked `upstream-merge.log` triggers dirty working-tree check in [`scripts/upstream-merge.sh`](file:///home/box/src/jukebox-tv/scripts/upstream-merge.sh#L407-L410)**
+   - In [`scripts/upstream-merge-cron.sh`](file:///home/box/src/jukebox-tv/scripts/upstream-merge-cron.sh#L303-L319), the cron wrapper defines `LOG_FILE="$REPO_DIR/upstream-merge.log"` and redirects script output with `{ ... } >> "$LOG_FILE" 2>&1`.
+   - This redirection creates `$REPO_DIR/upstream-merge.log` in the repository root *before* invoking `scripts/upstream-merge.sh`.
+   - When [`scripts/upstream-merge.sh`](file:///home/box/src/jukebox-tv/scripts/upstream-merge.sh#L407-L410) begins, it checks:
+     ```bash
+     if [[ -n "$(git status --porcelain)" ]]; then
+         echo "ERROR: working tree is dirty; refusing to run. Run 'git status' and clean up first."
+         exit 1
+     fi
+     ```
+   - `upstream-merge.log` is **not** in [`.gitignore`](file:///home/box/src/jukebox-tv/.gitignore) (it was only added to local, uncommitted `.git/info/exclude`). On any clean clone, new checkout, or environment where `.git/info/exclude` does not contain it, `git status --porcelain` reports `?? upstream-merge.log`.
+   - Consequently, every scheduled run under cron will immediately abort with `ERROR: working tree is dirty; refusing to run`.
+   - Furthermore, `git add -A -- ':(exclude)...'` in `scripts/upstream-merge.sh` does not exclude `upstream-merge.log`, meaning if staged, the log file would unintentionally be committed to the branch.
+   - **Fix**: Add `/upstream-merge.log` to [`.gitignore`](file:///home/box/src/jukebox-tv/.gitignore), or write cron logs outside the git tree (e.g. to `~/.local/state/` or `/var/log`).
+
+---
+
+### Medium Severity
+
+1. **Lock file discrepancy between cron wrapper and merge script**
+   - [`scripts/upstream-merge-cron.sh`](file:///home/box/src/jukebox-tv/scripts/upstream-merge-cron.sh#L302-L309) uses `flock -n 9` on `/tmp/jukebox-tv-upstream-merge.lock`.
+   - [`scripts/upstream-merge.sh`](file:///home/box/src/jukebox-tv/scripts/upstream-merge.sh#L394-L398) uses `flock -n 200` on `$REPO_DIR/.git/upstream-merge.lock`.
+   - Because they lock separate paths, a manual run of `scripts/upstream-merge.sh` does not prevent `scripts/upstream-merge-cron.sh` from acquiring its own lock and writing the start header into `upstream-merge.log` before `upstream-merge.sh` fails on the repo lock. Both scripts should standardize on locking the same file.
+
+2. **Race condition between `tee` process substitution and cron completion log**
+   - In [`scripts/upstream-merge.sh`](file:///home/box/src/jukebox-tv/scripts/upstream-merge.sh#L387), output redirection uses `exec > >(tee "$LOG_FILE") 2>&1`.
+   - In Bash, process substitutions spawned via `exec > >(...)` are not automatically waited on when the script process terminates.
+   - When `scripts/upstream-merge.sh` exits, [`scripts/upstream-merge-cron.sh`](file:///home/box/src/jukebox-tv/scripts/upstream-merge-cron.sh#L318) immediately prints `=== upstream-merge-cron end ... ===` to `LOG_FILE`. This can result in out-of-order log entries where the completion banner is logged before `tee` has finished flushing the final output lines of `upstream-merge.sh`.
+
+3. **Truncated diff can still receive approval in [`scripts/upstream-merge.sh`](file:///home/box/src/jukebox-tv/scripts/upstream-merge.sh#L521-L549)**
+   - When a resolution diff exceeds 100 KiB, it is truncated with `head -c "$MAX_DIFF_BYTES"`.
+   - If `agy` outputs `VERDICT: APPROVE`, `GATE_AGY` is marked as `pass`, even though parts of the conflict resolution were cut off and unreviewed. When `DIFF_TRUNCATED=1`, automated auto-merge should treat the review as incomplete (`GATE_AGY=fail`) and require human review.
+
+---
+
+### Low Severity / Notes
+
+1. **Missing `decision` log on `GATE_PROTECTED` failure in [`scripts/upstream-merge.sh`](file:///home/box/src/jukebox-tv/scripts/upstream-merge.sh#L457-L461)**
+   - When protected files or strings are detected in conflict hunks, `GATE_PROTECTED=fail` is set, but `decision protected fail "..."` is never called, omitting the standard `DECISION: protected=fail` log entry.
+2. **Format string argument count mismatch in [`scripts/make-update-manifest.sh`](file:///home/box/src/jukebox-tv/scripts/make-update-manifest.sh#L217)**
+   - `printf '%s %s %s\n' "$sha" "$size"` specifies three `%s` format specifiers for two arguments, resulting in an extra trailing space. While `read -r` trims IFS whitespace, the format string should be `'%s %s\n'`.
+
+---
+
+VERDICT: CHANGES (untracked upstream-merge.log created by cron wrapper triggers dirty working tree check in upstream-merge.sh; add to .gitignore)

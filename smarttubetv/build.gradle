@@ -25,6 +25,9 @@ buildscript {
 apply plugin: 'com.android.application'
 
 def keystorePropertiesFile = rootProject.file("keystore.properties")
+if (System.getenv("JUKEBOX_KEYSTORE_PROPERTIES") != null && new File(System.getenv("JUKEBOX_KEYSTORE_PROPERTIES")).exists()) {
+    keystorePropertiesFile = new File(System.getenv("JUKEBOX_KEYSTORE_PROPERTIES"))
+}
 def keystoreProperties = new Properties()
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
@@ -49,7 +52,18 @@ android {
 
     compileSdkVersion project.properties.compileSdkVersion
     buildToolsVersion project.properties.buildToolsVersion
-    testOptions.unitTests.includeAndroidResources = true
+    testOptions {
+        unitTests.includeAndroidResources = true
+        unitTests.all { test ->
+            // Jukebox: conscrypt-android's JNI lib cannot load on the JVM; Robolectric installs
+            // org.conscrypt.OpenSSLProvider during app-state setup. Robolectric ships its own
+            // JVM-friendly conscrypt-openjdk-uber, so drop only the conscrypt-android artifacts
+            // from our flavor's unit test classpaths.
+            if (test.name.contains('Stjukebox')) {
+                test.classpath = test.classpath.filter { !it.path.contains('conscrypt-android') }
+            }
+        }
+    }
     ndkVersion "21.0.6113669" // reduce size of the *.so files (stripping debug symbols)
     
     defaultConfig {
@@ -123,14 +137,22 @@ android {
     // https://stackoverflow.com/questions/18332474/how-to-set-versionname-in-apk-filename-using-gradle
     applicationVariants.all { variant ->
         variant.outputs.all { output ->
-            def project = "SmartTube"
-            def flavor = variant.productFlavors[-1].name.substring(2) // remove st prefix
+            def flavorName = variant.productFlavors[-1].name
+            def project = flavorName == "stjukebox" ? "Jukebox" : "SmartTube"
+            def flavor = flavorName.substring(2) // remove st prefix
             def buildType = variant.buildType.name.take(1)
             def version = variant.versionName
             def arch = output.getFilter(com.android.build.OutputFile.ABI)
             arch = arch != null ? arch : "universal"
 
-            def newApkName = sprintf("%s_%s_%s_%s.apk", [project, flavor, version, arch])
+            // Jukebox: canonical published name Jukebox_<version>_<abi>.apk (no flavor
+            // segment), matching the updater manifest URLs; other flavors keep the old name.
+            def newApkName
+            if (flavorName == "stjukebox") {
+                newApkName = sprintf("%s_%s_%s.apk", [project, version, arch])
+            } else {
+                newApkName = sprintf("%s_%s_%s_%s.apk", [project, flavor, version, arch])
+            }
 
             // gradle 4.6 migration
             output.outputFileName = new File(newApkName)
@@ -166,6 +188,12 @@ android {
         ststable {
             applicationId "org.smarttube.stable"
             targetSdkVersion project.properties.compileSdkVersion
+        }
+        stjukebox {
+            applicationId "net.tfour.jukebox"
+            targetSdkVersion project.properties.compileSdkVersion
+            // Submodule deps (youtubeapi) have no stjukebox flavor; fall back to ststable
+            matchingFallbacks = ['ststable']
         }
         stfdroid {
             applicationId "app.smarttube.fdroid"
@@ -218,6 +246,10 @@ dependencies {
 
     testImplementation 'junit:junit:' + junitVersion
     testImplementation 'org.robolectric:robolectric:' + robolectricVersion
+    // Jukebox: tests run under JDK 17 where Robolectric 4.6.1 (pinned in SharedModules
+    // constants.gradle) fails with "Unsupported class file major version 61" (ASM too old).
+    // Upgrade Robolectric for the stjukebox flavor unit tests only.
+    testStjukeboxImplementation 'org.robolectric:robolectric:4.11.1'
     androidTestImplementation 'androidx.test.ext:junit:' + testXSupportVersion
     androidTestImplementation 'androidx.test.ext:truth:' + testXSupportVersion
     androidTestImplementation 'androidx.test:runner:' + testXSupportVersion

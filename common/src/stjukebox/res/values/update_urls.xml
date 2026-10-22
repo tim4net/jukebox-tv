@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="update_urls">
+        <item>https://jukebox.tfour.net/install/latest.json</item>
+    </string-array>
+</resources>
