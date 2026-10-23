@@ -17,7 +17,7 @@ import com.liskovsoft.smartyoutubetv2.common.app.views.ViewManager;
  * current room song, so normal (non-jukebox) playback is never reported.
  *
  * While the room is active this controller forces the loaded song to play, heartbeats
- * position every 5s, and — only while a room song is set — reopens that song if a
+ * position every 5s as "progress", and — only while a room song is set — reopens that song if a
  * different video loads. SmartTube autoplay-next is gated the same way via {@code JukeboxMode}.
  */
 public class JukeboxRoomController extends BasePlayerController implements JukeboxRoom.Listener {
@@ -47,11 +47,10 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
                 stopHeartbeat();
                 return;
             }
-            JukeboxRoom.instance(ctx).reportPlaying(
+            JukeboxRoom.instance(ctx).reportProgress(
                     mLoadedVideoId,
                     toSec(player.getDurationMs()),
-                    toSec(player.getPositionMs()),
-                    "playing");
+                    toSec(player.getPositionMs()));
             if (mHeartbeatRunning) {
                 handler().postDelayed(this, HEARTBEAT_MS);
             }
@@ -155,7 +154,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         if (!JukeboxRoom.isRoomActive()) {
             return;
         }
-        // Only tell the room. It sends "next"; the following "play" opens the next song.
+        // Only tell the room. It sends "ended"; the following "play" opens the next song.
         Video video = getPlayer() != null && getPlayer().getVideo() != null ? getPlayer().getVideo() : getVideo();
         if (video != null && video.videoId != null && getContext() != null) {
             JukeboxRoom.instance(getContext()).songEnded(video.videoId);

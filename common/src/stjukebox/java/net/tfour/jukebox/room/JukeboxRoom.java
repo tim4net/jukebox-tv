@@ -226,4 +226,13 @@ public final class JukeboxRoom {
         }
         client.reportPlaying(videoId, durationSec, positionSec, state);
     }
+
+    /** See {@link JukeboxRoomClient#reportProgress(String, Integer, Integer)}. */
+    public void reportProgress(String videoId, Integer durationSec, Integer positionSec) {
+        JukeboxRoomClient client = mClient;
+        if (client == null || !mActive) {
+            return;
+        }
+        client.reportProgress(videoId, durationSec, positionSec);
+    }
 }

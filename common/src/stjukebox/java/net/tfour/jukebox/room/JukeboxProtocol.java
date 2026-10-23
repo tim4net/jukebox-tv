@@ -8,8 +8,9 @@ import org.json.JSONObject;
  *
  * Client -> server (field "t" is the type):
  *   {"t":"bridge-hello","token":T}
- *   {"t":"next","token":T}
- *   {"t":"playing","token":T,"songId":S,"durationSec":N,"positionSec":N,"state":"playing"|"paused"|"error"}
+ *   {"t":"playing","token":T,"songId":S,"videoId":V,"durationSec":N,"positionSec":N,"state":"playing"|"paused"|"error"}
+ *   {"t":"progress","token":T,"songId":S,"videoId":V,"durationSec":N,"positionSec":N}
+ *   {"t":"ended","token":T,"songId":S,"videoId":V}
  *   {"t":"ping","c":<client millis>}
  *
  * Server -> client:
@@ -23,8 +24,9 @@ import org.json.JSONObject;
 public final class JukeboxProtocol {
     public static final String TYPE_BRIDGE_HELLO = "bridge-hello";
     public static final String TYPE_BRIDGE_ACK = "bridge-ack";
-    public static final String TYPE_NEXT = "next";
     public static final String TYPE_PLAYING = "playing";
+    public static final String TYPE_PROGRESS = "progress";
+    public static final String TYPE_ENDED = "ended";
     public static final String TYPE_PING = "ping";
     public static final String TYPE_PONG = "pong";
     public static final String TYPE_PLAY = "play";
@@ -42,27 +44,46 @@ public final class JukeboxProtocol {
         return simpleMessage(TYPE_BRIDGE_HELLO, token);
     }
 
-    public static String next(String token) {
-        return simpleMessage(TYPE_NEXT, token);
-    }
-
-    public static String playing(String token, String songId, Integer durationSec, Integer positionSec, String state) {
+    /** Load / play / pause. Unknown numbers and a null videoId are omitted. */
+    public static String playing(String token, String songId, String videoId,
+                                 Integer durationSec, Integer positionSec, String state) {
         try {
             JSONObject json = new JSONObject();
             json.put("t", TYPE_PLAYING);
             appendToken(json, token);
-            if (songId != null) {
-                json.put("songId", songId);
-            }
-            if (durationSec != null) {
-                json.put("durationSec", durationSec);
-            }
-            if (positionSec != null) {
-                json.put("positionSec", positionSec);
-            }
+            appendSong(json, songId, videoId);
+            appendTiming(json, durationSec, positionSec);
             if (state != null) {
                 json.put("state", state);
             }
+            return json.toString();
+        } catch (JSONException e) {
+            return null;
+        }
+    }
+
+    /** ~5s position heartbeat. No playback state. */
+    public static String progress(String token, String songId, String videoId,
+                                  Integer durationSec, Integer positionSec) {
+        try {
+            JSONObject json = new JSONObject();
+            json.put("t", TYPE_PROGRESS);
+            appendToken(json, token);
+            appendSong(json, songId, videoId);
+            appendTiming(json, durationSec, positionSec);
+            return json.toString();
+        } catch (JSONException e) {
+            return null;
+        }
+    }
+
+    /** Song finished. */
+    public static String ended(String token, String songId, String videoId) {
+        try {
+            JSONObject json = new JSONObject();
+            json.put("t", TYPE_ENDED);
+            appendToken(json, token);
+            appendSong(json, songId, videoId);
             return json.toString();
         } catch (JSONException e) {
             return null;
@@ -182,6 +203,24 @@ public final class JukeboxProtocol {
     private static void appendToken(JSONObject json, String token) throws JSONException {
         if (token != null && !token.isEmpty()) {
             json.put("token", token);
+        }
+    }
+
+    private static void appendSong(JSONObject json, String songId, String videoId) throws JSONException {
+        if (songId != null) {
+            json.put("songId", songId);
+        }
+        if (videoId != null) {
+            json.put("videoId", videoId);
+        }
+    }
+
+    private static void appendTiming(JSONObject json, Integer durationSec, Integer positionSec) throws JSONException {
+        if (durationSec != null) {
+            json.put("durationSec", durationSec);
+        }
+        if (positionSec != null) {
+            json.put("positionSec", positionSec);
         }
     }
 

@@ -37,6 +37,16 @@ public class JukeboxRoomClientTest {
             for (String s : sent) if (type.equals(new JSONObject(s).getString("t"))) n++;
             return n;
         }
+        JSONObject only(String type) throws Exception {
+            JSONObject found = null;
+            int n = 0;
+            for (String s : sent) {
+                JSONObject o = new JSONObject(s);
+                if (type.equals(o.getString("t"))) { found = o; n++; }
+            }
+            assertEquals(1, n);
+            return found;
+        }
     }
 
     static class FakeHttp implements JukeboxRoomClient.Http {
@@ -147,14 +157,16 @@ public class JukeboxRoomClientTest {
     }
 
     @Test
-    public void songEndSendsNextExactlyOnceAndOnlyForCurrentSong() throws Exception {
+    public void songEndSendsEndedExactlyOnceAndOnlyForCurrentSong() throws Exception {
         c.start(); t.open();
         t.msg(play("s1", V1));
         c.songEnded(V2); // some other (non-room) video ended
-        assertEquals(0, t.count("next"));
+        assertEquals(0, t.count("ended"));
         c.songEnded(V1);
         c.songEnded(V1);
-        assertEquals(1, t.count("next"));
+        JSONObject ended = t.only("ended");
+        assertEquals("s1", ended.getString("songId"));
+        assertEquals(V1, ended.getString("videoId"));
     }
 
     @Test
@@ -163,11 +175,13 @@ public class JukeboxRoomClientTest {
         t.msg(play("s1", V1));
         t.drop();
         c.songEnded(V1);
-        assertEquals(0, t.count("next"));
+        assertEquals(0, t.count("ended"));
         sch.runAll(); // reconnect
         t.open();
         t.msg(play("s1", V1)); // server's post-ack play: still s1
-        assertEquals(1, t.count("next"));
+        JSONObject ended = t.only("ended");
+        assertEquals("s1", ended.getString("songId"));
+        assertEquals(V1, ended.getString("videoId"));
         assertEquals(1, rec.plays.size()); // not reopened
     }
 
@@ -179,7 +193,7 @@ public class JukeboxRoomClientTest {
         c.songEnded(V1);
         sch.runAll(); t.open();
         t.msg(play("s2", V2)); // server auto-advanced while we were away
-        assertEquals(0, t.count("next"));
+        assertEquals(0, t.count("ended"));
         assertEquals(java.util.Arrays.asList(V1, V2), rec.plays);
     }
 
@@ -199,8 +213,46 @@ public class JukeboxRoomClientTest {
         t.msg(play("s1", V1));
         c.reportPlaying(V2, 100, null, "playing");
         assertEquals(0, t.count("playing"));
-        c.reportPlaying(V1, 213, null, "playing");
-        assertEquals(1, t.count("playing"));
+        c.reportPlaying(V1, 213, null, "paused");
+        JSONObject p = t.only("playing");
+        assertEquals("s1", p.getString("songId"));
+        assertEquals(V1, p.getString("videoId"));
+        assertEquals(213, p.getInt("durationSec"));
+        assertFalse(p.has("positionSec"));
+        assertEquals("paused", p.getString("state"));
+    }
+
+    @Test
+    public void reportProgressOnlyForCurrentSong() throws Exception {
+        c.start(); t.open();
+        t.msg(play("s1", V1));
+        c.reportProgress(V2, 100, 5);
+        assertEquals(0, t.count("progress"));
+        c.reportProgress(V1, 213, 40);
+        JSONObject p = t.only("progress");
+        assertEquals("s1", p.getString("songId"));
+        assertEquals(V1, p.getString("videoId"));
+        assertEquals(213, p.getInt("durationSec"));
+        assertEquals(40, p.getInt("positionSec"));
+        assertFalse(p.has("state"));
+    }
+
+    @Test
+    public void bridgeTokenIsAttachedToPlaybackMessages() throws Exception {
+        c = new JukeboxRoomClient(ORIGIN, t, http, sch, store, rec, "bridge-tok");
+        c.start(); t.open();
+        t.msg(play("s1", V1));
+        c.reportPlaying(V1, 10, 1, "playing");
+        c.reportProgress(V1, 10, 2);
+        c.songEnded(V1);
+        for (String type : new String[]{"bridge-hello", "playing", "progress", "ended"}) {
+            JSONObject m = t.only(type);
+            assertEquals("bridge-tok", m.getString("token"));
+            if (!"bridge-hello".equals(type)) {
+                assertEquals("s1", m.getString("songId"));
+                assertEquals(V1, m.getString("videoId"));
+            }
+        }
     }
 
     @Test

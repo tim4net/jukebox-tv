@@ -13,23 +13,42 @@ import static org.junit.Assert.*;
 @Config(sdk = 28)
 public class JukeboxProtocolTest {
     @Test
-    public void bridgeHelloAndNextCarryTokenOnlyWhenSet() throws Exception {
+    public void bridgeHelloAndEndedCarryTokenOnlyWhenSet() throws Exception {
         JSONObject h = new JSONObject(JukeboxProtocol.bridgeHello("tok"));
         assertEquals("bridge-hello", h.getString("t"));
         assertEquals("tok", h.getString("token"));
         assertFalse(new JSONObject(JukeboxProtocol.bridgeHello("")).has("token"));
-        assertFalse(new JSONObject(JukeboxProtocol.next(null)).has("token"));
-        assertEquals("next", new JSONObject(JukeboxProtocol.next("tok")).getString("t"));
+        JSONObject ended = new JSONObject(JukeboxProtocol.ended("tok", "s1", "dQw4w9WgXcQ"));
+        assertEquals("ended", ended.getString("t"));
+        assertEquals("tok", ended.getString("token"));
+        assertEquals("s1", ended.getString("songId"));
+        assertEquals("dQw4w9WgXcQ", ended.getString("videoId"));
+        assertFalse(new JSONObject(JukeboxProtocol.ended(null, "s1", "dQw4w9WgXcQ")).has("token"));
     }
 
     @Test
     public void playingOmitsUnknownNumbers() throws Exception {
-        JSONObject p = new JSONObject(JukeboxProtocol.playing(null, "s1", 215, null, "paused"));
+        JSONObject p = new JSONObject(JukeboxProtocol.playing("tok", "s1", "dQw4w9WgXcQ", 215, null, "paused"));
         assertEquals("playing", p.getString("t"));
+        assertEquals("tok", p.getString("token"));
         assertEquals("s1", p.getString("songId"));
+        assertEquals("dQw4w9WgXcQ", p.getString("videoId"));
         assertEquals(215, p.getInt("durationSec"));
         assertFalse(p.has("positionSec"));
         assertEquals("paused", p.getString("state"));
+        assertFalse(new JSONObject(JukeboxProtocol.playing(null, "s1", null, null, null, null)).has("videoId"));
+    }
+
+    @Test
+    public void progressOmitsUnknownNumbersAndHasNoState() throws Exception {
+        JSONObject p = new JSONObject(JukeboxProtocol.progress("tok", "s1", "dQw4w9WgXcQ", null, 12));
+        assertEquals("progress", p.getString("t"));
+        assertEquals("tok", p.getString("token"));
+        assertEquals("s1", p.getString("songId"));
+        assertEquals("dQw4w9WgXcQ", p.getString("videoId"));
+        assertEquals(12, p.getInt("positionSec"));
+        assertFalse(p.has("durationSec"));
+        assertFalse(p.has("state"));
     }
 
     @Test

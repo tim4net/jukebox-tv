@@ -116,7 +116,8 @@ public class JukeboxRoomClient {
     private String mLastStatus;
     private String mCurrentSongId;
     private String mCurrentVideoId;
-    private final Set<String> mNextSentSongIds = new LinkedHashSet<>();
+    /** Song ids for which "ended" was already accepted by the socket. */
+    private final Set<String> mEndedSentSongIds = new LinkedHashSet<>();
     private String mPendingEndSongId;
     private boolean mAwaitPlayAfterReconnect;
 
@@ -172,9 +173,9 @@ public class JukeboxRoomClient {
 
     /**
      * Reports that the current song ended. Only acts when videoId matches the current
-     * song's videoId and "next" hasn't been sent for it yet. If the socket is down, the
-     * ended songId is remembered and "next" is sent after reconnect when the server's
-     * post-ack "play" is still for that same songId. Never sends "next" twice per songId.
+     * song's videoId and "ended" hasn't been sent for it yet. If the socket is down, the
+     * ended songId is remembered and "ended" is sent after reconnect when the server's
+     * post-ack "play" is still for that same songId. Never sends "ended" twice per songId.
      */
     public synchronized void songEnded(String videoId) {
         if (!mRunning || mCurrentSongId == null) {
@@ -183,23 +184,30 @@ public class JukeboxRoomClient {
         if (videoId == null || !videoId.equals(mCurrentVideoId)) {
             return;
         }
-        if (mNextSentSongIds.contains(mCurrentSongId)) {
+        if (mEndedSentSongIds.contains(mCurrentSongId)) {
             return;
         }
-        if (!sendNextLocked(mCurrentSongId)) {
+        if (!sendEndedLocked(mCurrentSongId, mCurrentVideoId)) {
             mPendingEndSongId = mCurrentSongId;
         }
     }
 
-    /** Reports playback state; ignored unless videoId equals the current song's videoId. */
+    /** Reports playback state on load/play/pause; ignored unless videoId is the current song. */
     public synchronized void reportPlaying(String videoId, Integer durationSec, Integer positionSec, String state) {
-        if (!mRunning || mCurrentSongId == null || videoId == null) {
+        if (!isCurrentSongLocked(videoId)) {
             return;
         }
-        if (!videoId.equals(mCurrentVideoId)) {
+        mTransport.send(JukeboxProtocol.playing(
+                mToken, mCurrentSongId, mCurrentVideoId, durationSec, positionSec, state));
+    }
+
+    /** ~5s position heartbeat; ignored unless videoId is the current song. */
+    public synchronized void reportProgress(String videoId, Integer durationSec, Integer positionSec) {
+        if (!isCurrentSongLocked(videoId)) {
             return;
         }
-        mTransport.send(JukeboxProtocol.playing(mToken, mCurrentSongId, durationSec, positionSec, state));
+        mTransport.send(JukeboxProtocol.progress(
+                mToken, mCurrentSongId, mCurrentVideoId, durationSec, positionSec));
     }
 
     public synchronized boolean isConnected() {
@@ -357,8 +365,8 @@ public class JukeboxRoomClient {
             String endedSongId = mPendingEndSongId;
             mPendingEndSongId = null;
             if (songId.equals(endedSongId)) {
-                // The server never saw our "next" (socket was down): advance now.
-                sendNextLocked(songId);
+                // The server never saw our "ended" (socket was down): advance now.
+                sendEndedLocked(songId, message.getVideoId());
                 return;
             }
             // Otherwise the server already advanced on its own; drop the pending end.
@@ -396,16 +404,21 @@ public class JukeboxRoomClient {
         mCurrentVideoId = null;
     }
 
-    private boolean sendNextLocked(String songId) {
-        if (mNextSentSongIds.contains(songId)) {
-            return true; // never send next twice for one songId
+    private boolean isCurrentSongLocked(String videoId) {
+        return mRunning && mCurrentSongId != null && videoId != null && videoId.equals(mCurrentVideoId);
+    }
+
+    /** @return false when the socket did not accept the message (caller may retry). */
+    private boolean sendEndedLocked(String songId, String videoId) {
+        if (mEndedSentSongIds.contains(songId)) {
+            return true; // never send ended twice for one songId
         }
-        if (!mTransport.send(JukeboxProtocol.next(mToken))) {
+        if (!mTransport.send(JukeboxProtocol.ended(mToken, songId, videoId))) {
             return false;
         }
-        mNextSentSongIds.add(songId);
-        while (mNextSentSongIds.size() > MAX_REMEMBERED_SONGS) {
-            Iterator<String> it = mNextSentSongIds.iterator();
+        mEndedSentSongIds.add(songId);
+        while (mEndedSentSongIds.size() > MAX_REMEMBERED_SONGS) {
+            Iterator<String> it = mEndedSentSongIds.iterator();
             it.next();
             it.remove();
         }
