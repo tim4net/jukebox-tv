@@ -6,6 +6,7 @@ import android.os.HandlerThread;
 import android.os.Looper;
 
 import com.liskovsoft.smartyoutubetv2.common.R;
+import com.liskovsoft.smartyoutubetv2.common.app.models.playback.JukeboxMode;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.PlaybackPresenter;
 
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -49,6 +50,9 @@ public final class JukeboxRoom {
 
         @Override
         public void onPlay(String songId, final String videoId, final String title) {
+            // Play means a room song is set. Do this before openVideo so autoplay
+            // suppression is already on when the player loads that song.
+            JukeboxMode.setSongSet(songId != null && videoId != null);
             mMainHandler.post(() -> {
                 mNowPlaying = title;
                 for (Listener listener : mListeners) {
@@ -60,6 +64,8 @@ public final class JukeboxRoom {
 
         @Override
         public void onStatus(final String status) {
+            // Closed/stopped/idle paths clear the client song before this runs.
+            syncSongFlag();
             mMainHandler.post(() -> {
                 mStatus = status;
                 for (Listener listener : mListeners) {
@@ -70,6 +76,8 @@ public final class JukeboxRoom {
 
         @Override
         public void onState(final String nowPlayingTitle, final int listeners) {
+            // A state with no current song (nowPlaying null) clears the client song first.
+            syncSongFlag();
             mMainHandler.post(() -> {
                 mNowPlaying = nowPlayingTitle;
                 for (Listener listener : mListeners) {
@@ -133,6 +141,8 @@ public final class JukeboxRoom {
                     mToken);
         }
         mActive = true;
+        // Flag tracks the current song, not the socket. A fresh room is idle until "play".
+        syncSongFlag();
         final JukeboxRoomClient client = mClient;
         // Room setup does blocking HTTP: keep it off the main thread.
         mThreadHandler.post(client::start);
@@ -142,8 +152,11 @@ public final class JukeboxRoom {
         mActive = false;
         final JukeboxRoomClient client = mClient;
         if (client != null) {
+            // Drop the song before the async stop, so a restart doesn't look "now playing".
+            client.clearCurrentSong();
             mThreadHandler.post(client::stop);
         }
+        JukeboxMode.setSongSet(false);
     }
 
     public boolean isActive() {
@@ -180,6 +193,20 @@ public final class JukeboxRoom {
 
     public String getNowPlaying() {
         return mNowPlaying;
+    }
+
+    /** Mirrors {@link JukeboxRoomClient}'s current song onto {@link JukeboxMode}. */
+    private void syncSongFlag() {
+        JukeboxMode.setSongSet(getCurrentVideoId() != null);
+    }
+
+    /** Video id of the song the room currently wants playing, or null when none. */
+    public String getCurrentVideoId() {
+        JukeboxRoomClient client = mClient;
+        if (client == null || !mActive) {
+            return null;
+        }
+        return client.getCurrentVideoId();
     }
 
     /** See {@link JukeboxRoomClient#songEnded(String)}. */

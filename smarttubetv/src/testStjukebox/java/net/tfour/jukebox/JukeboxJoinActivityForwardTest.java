@@ -4,6 +4,8 @@ import android.content.ComponentName;
 import android.content.Intent;
 import android.net.Uri;
 
+import com.liskovsoft.smartyoutubetv2.tv.R;
+import com.liskovsoft.smartyoutubetv2.tv.ui.browse.BrowseActivity;
 import com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity;
 
 import net.tfour.jukebox.room.JukeboxRoom;
@@ -119,6 +121,28 @@ public class JukeboxJoinActivityForwardTest {
         assertNull("plain MAIN launch must not be forwarded",
                 Shadows.shadowOf(RuntimeEnvironment.getApplication()).getNextStartedActivity());
         assertFalse("plain MAIN launch must keep the join screen", a.isFinishing());
+
+        ac.pause().stop().destroy();
+    }
+
+    @Test
+    public void browseButtonStartsBrowseActivityNotSplash() {
+        ActivityController<JukeboxJoinActivity> ac =
+                Robolectric.buildActivity(JukeboxJoinActivity.class).setup();
+        JukeboxJoinActivity a = ac.get();
+        JukeboxRoom.instance(a).stop(); // no background room traffic in tests
+
+        a.findViewById(R.id.jukebox_browse).performClick();
+
+        Intent started = Shadows.shadowOf(RuntimeEnvironment.getApplication()).getNextStartedActivity();
+        assertNotNull("browse must start BrowseActivity", started);
+        assertEquals(new ComponentName(RuntimeEnvironment.getApplication(), BrowseActivity.class),
+                started.getComponent());
+        assertFalse("browse must not open SplashActivity",
+                SplashActivity.class.getName().equals(
+                        started.getComponent() != null ? started.getComponent().getClassName() : null));
+        assertTrue("browse must set FLAG_ACTIVITY_NEW_TASK",
+                (started.getFlags() & Intent.FLAG_ACTIVITY_NEW_TASK) != 0);
 
         ac.pause().stop().destroy();
     }

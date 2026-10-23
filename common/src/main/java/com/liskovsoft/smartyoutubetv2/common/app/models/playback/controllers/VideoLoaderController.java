@@ -17,6 +17,7 @@ import com.liskovsoft.smartyoutubetv2.common.app.models.data.SimpleMediaItem;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.VideoGroup;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.BasePlayerController;
+import com.liskovsoft.smartyoutubetv2.common.app.models.playback.JukeboxMode;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.manager.PlayerConstants;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.AppDialogPresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.dialogs.VideoActionPresenter;
@@ -151,6 +152,11 @@ public class VideoLoaderController extends BasePlayerController {
     }
 
     public void loadNext() {
+        // A room song is set: the server "play" message opens the next one.
+        // An idle room (no current song) keeps normal autoplay.
+        if (JukeboxMode.isSongSet()) {
+            return;
+        }
         if (getPlayer() == null || getVideo() == null) {
             return;
         }
@@ -171,6 +177,12 @@ public class VideoLoaderController extends BasePlayerController {
     @Override
     public void onPlayEnd() {
         if (getPlayer() == null) {
+            return;
+        }
+
+        // A room song is set. Report song end and wait for the next "play".
+        if (JukeboxMode.isSongSet()) {
+            Utils.removeCallbacks(mLoadNext, mMetadataSync);
             return;
         }
 
@@ -226,7 +238,7 @@ public class VideoLoaderController extends BasePlayerController {
     }
 
     private void waitMetadataSync(Video current, boolean showLoadingMsg) {
-        if (current == null) {
+        if (JukeboxMode.isSongSet() || current == null) {
             return;
         }
 
@@ -348,7 +360,7 @@ public class VideoLoaderController extends BasePlayerController {
     }
 
     private void loadNextVideo(int delayMs) {
-        if (getPlayer() == null) {
+        if (JukeboxMode.isSongSet() || getPlayer() == null) {
             return;
         }
 
@@ -401,7 +413,7 @@ public class VideoLoaderController extends BasePlayerController {
     }
 
     private void applyPlaybackMode(int playbackMode) {
-        if (getPlayer() == null) {
+        if (JukeboxMode.isSongSet() || getPlayer() == null) {
             return;
         }
 

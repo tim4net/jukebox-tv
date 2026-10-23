@@ -81,6 +81,8 @@
             android:layout_marginTop="24dp"
             android:minHeight="48dp"
             android:focusable="true"
+            android:background="@drawable/jukebox_browse_button"
+            android:textColor="@color/jukebox_browse_button_text"
             android:paddingStart="32dp"
             android:paddingEnd="32dp"
             android:text="@string/jukebox_browse"

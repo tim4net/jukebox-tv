@@ -4,23 +4,19 @@ import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.TextView;
 
-import com.google.zxing.BarcodeFormat;
-import com.google.zxing.EncodeHintType;
-import com.google.zxing.common.BitMatrix;
-import com.google.zxing.qrcode.QRCodeWriter;
 import com.liskovsoft.smartyoutubetv2.tv.R;
+import com.liskovsoft.smartyoutubetv2.tv.ui.browse.BrowseActivity;
 import com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity;
 
+import net.tfour.jukebox.room.JukeboxQr;
 import net.tfour.jukebox.room.JukeboxRoom;
-
-import java.util.EnumMap;
-import java.util.Map;
 
 /**
  * TV join screen (stjukebox flavor only, the launcher entry): big QR of the join URL,
@@ -60,8 +56,18 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         hintView.setText(getString(R.string.jukebox_join_hint, host));
 
         Button browseButton = findViewById(R.id.jukebox_browse);
-        browseButton.setOnClickListener(v ->
-                startActivity(new Intent(this, SplashActivity.class)));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            // Theme tint would wash out the focused-state color.
+            browseButton.setBackgroundTintList(null);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            browseButton.setDefaultFocusHighlightEnabled(false);
+        }
+        browseButton.setOnClickListener(v -> {
+            Intent browse = new Intent(this, BrowseActivity.class);
+            browse.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(browse);
+        });
 
         JukeboxRoom.instance(this).start();
     }
@@ -146,27 +152,6 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
 
     /** Renders a QR code of {@code text} into a square bitmap, or null on failure. */
     public static Bitmap qrBitmap(String text, int sizePx) {
-        if (text == null || sizePx <= 0) {
-            return null;
-        }
-        try {
-            Map<EncodeHintType, Object> hints = new EnumMap<>(EncodeHintType.class);
-            hints.put(EncodeHintType.CHARACTER_SET, "UTF-8");
-            hints.put(EncodeHintType.MARGIN, 2);
-            BitMatrix matrix = new QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, sizePx, sizePx, hints);
-            int width = matrix.getWidth();
-            int height = matrix.getHeight();
-            int[] pixels = new int[width * height];
-            for (int y = 0; y < height; y++) {
-                for (int x = 0; x < width; x++) {
-                    pixels[y * width + x] = matrix.get(x, y) ? 0xFF000000 : 0xFFFFFFFF;
-                }
-            }
-            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-            bitmap.setPixels(pixels, 0, width, 0, 0, width, height);
-            return bitmap;
-        } catch (Throwable t) {
-            return null;
-        }
+        return JukeboxQr.bitmap(text, sizePx);
     }
 }

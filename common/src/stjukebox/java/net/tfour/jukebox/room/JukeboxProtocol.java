@@ -118,12 +118,14 @@ public final class JukeboxProtocol {
                 listeners = ((Number) listenersValue).intValue();
             }
             String nowPlayingTitle = null;
+            // Explicit null means the room is idle. An absent field is not that signal.
+            boolean nowPlayingNull = json.has("nowPlaying") && json.isNull("nowPlaying");
             JSONObject nowPlaying = json.optJSONObject("nowPlaying");
             if (nowPlaying != null) {
                 nowPlayingTitle = stringify(nowPlaying, "title");
             }
             String errorCode = stringify(json, "code");
-            return new Message(type, songId, videoId, title, durationMs, listeners, nowPlayingTitle, errorCode);
+            return new Message(type, songId, videoId, title, durationMs, listeners, nowPlayingTitle, nowPlayingNull, errorCode);
         } catch (JSONException e) {
             return unknown();
         }
@@ -189,7 +191,7 @@ public final class JukeboxProtocol {
     }
 
     private static Message unknown() {
-        return new Message(TYPE_UNKNOWN, null, null, null, null, -1, null, null);
+        return new Message(TYPE_UNKNOWN, null, null, null, null, -1, null, false, null);
     }
 
     /**
@@ -203,10 +205,11 @@ public final class JukeboxProtocol {
         private final Long mDurationMs;
         private final int mListeners;
         private final String mNowPlayingTitle;
+        private final boolean mNowPlayingNull;
         private final String mErrorCode;
 
         private Message(String type, String songId, String videoId, String title, Long durationMs,
-                        int listeners, String nowPlayingTitle, String errorCode) {
+                        int listeners, String nowPlayingTitle, boolean nowPlayingNull, String errorCode) {
             mType = type;
             mSongId = songId;
             mVideoId = videoId;
@@ -214,6 +217,7 @@ public final class JukeboxProtocol {
             mDurationMs = durationMs;
             mListeners = listeners;
             mNowPlayingTitle = nowPlayingTitle;
+            mNowPlayingNull = nowPlayingNull;
             mErrorCode = errorCode;
         }
 
@@ -245,6 +249,11 @@ public final class JukeboxProtocol {
 
         public String getNowPlayingTitle() {
             return mNowPlayingTitle;
+        }
+
+        /** True when a state message has {@code "nowPlaying": null} (room idle, no song). */
+        public boolean isNowPlayingNull() {
+            return mNowPlayingNull;
         }
 
         public String getErrorCode() {

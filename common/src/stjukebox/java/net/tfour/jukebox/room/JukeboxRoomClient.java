@@ -159,7 +159,15 @@ public class JukeboxRoomClient {
         mConnected = false;
         mScheduler.cancelAll();
         mTransport.close();
+        clearSongLocked();
+        mPendingEndSongId = null;
+        mAwaitPlayAfterReconnect = false;
         notifyStatusLocked("Stopped");
+    }
+
+    /** Forgets the current song without tearing the socket down. */
+    public synchronized void clearCurrentSong() {
+        clearSongLocked();
     }
 
     /**
@@ -196,6 +204,11 @@ public class JukeboxRoomClient {
 
     public synchronized boolean isConnected() {
         return mConnected;
+    }
+
+    /** Video id of the song the room currently wants playing, or null. */
+    public synchronized String getCurrentVideoId() {
+        return mCurrentVideoId;
     }
 
     // Internal machinery. Everything below expects the instance lock to be held.
@@ -324,6 +337,9 @@ public class JukeboxRoomClient {
         if (JukeboxProtocol.TYPE_PLAY.equals(type)) {
             handlePlayLocked(message);
         } else if (JukeboxProtocol.TYPE_STATE.equals(type)) {
+            if (message.isNowPlayingNull()) {
+                clearSongLocked();
+            }
             mListener.onState(message.getNowPlayingTitle(), message.getListeners());
         } else if (JukeboxProtocol.TYPE_CLOSED.equals(type)) {
             handleClosedLocked();
@@ -363,8 +379,7 @@ public class JukeboxRoomClient {
         mTransport.close();
         mStore.put(KEY_ROOM, null);
         mStore.put(KEY_CODE, null);
-        mCurrentSongId = null;
-        mCurrentVideoId = null;
+        clearSongLocked();
         mPendingEndSongId = null;
         mAwaitPlayAfterReconnect = false;
         if (mRunning) {
@@ -374,6 +389,11 @@ public class JukeboxRoomClient {
             // HTTP, so hop to the scheduler thread instead of running it inline.
             mScheduler.schedule(mSetupRetryRunnable, 0);
         }
+    }
+
+    private void clearSongLocked() {
+        mCurrentSongId = null;
+        mCurrentVideoId = null;
     }
 
     private boolean sendNextLocked(String songId) {
