@@ -24,7 +24,7 @@ public class JukeboxFlavorTest {
     }
 
     @Test
-    public void appNameIsJukebox() {
-        assertEquals("Jukebox", RuntimeEnvironment.getApplication().getString(R.string.app_name));
+    public void appNameIsJukeboxTv() {
+        assertEquals("Jukebox TV", RuntimeEnvironment.getApplication().getString(R.string.app_name));
     }
 }

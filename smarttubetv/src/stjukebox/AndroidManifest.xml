@@ -3,12 +3,13 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <application>
-        <!-- Second launcher entry: the TV join screen (QR + code). -->
+        <!-- The only launcher entry: the TV join screen (QR + code). -->
         <activity
             android:name="net.tfour.jukebox.JukeboxJoinActivity"
             android:banner="@mipmap/app_banner"
+            android:icon="@mipmap/app_icon"
             android:exported="true"
-            android:label="@string/jukebox_room_label"
+            android:label="@string/app_name"
             android:screenOrientation="landscape"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             tools:ignore="LockedOrientationActivity">
@@ -18,5 +19,38 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Strip the upstream MAIN/LAUNCHER entry while keeping SplashActivity's
+             VIEW (youtube link) filters: the intent-filter below matches the launcher
+             filter of the main manifest (action + categories) and removes only it. -->
+        <activity
+            android:name="com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity"
+            tools:node="merge">
+            <intent-filter tools:node="remove">
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- "Alt app launcher icon" alias: strip its launcher intent-filter the same way. -->
+        <activity-alias
+            android:name="com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivityAlt"
+            tools:node="merge">
+            <intent-filter tools:node="remove">
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- Search suggestions provider: unique authority so it can't collide with a
+             real SmartTube install (the library declares "org.smarttube"). -->
+        <provider
+            android:name="com.liskovsoft.leanbackassistant.search.VideoContentProvider"
+            android:authorities="net.tfour.jukebox.search"
+            tools:replace="android:authorities" />
     </application>
 </manifest>
