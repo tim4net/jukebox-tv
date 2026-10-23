@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Jukebox room server origin (protocol served by the partyq room server). -->
+    <string translatable="false" name="jukebox_origin">https://jukebox.tfour.net</string>
+    <!-- Bridge token; only needed if the server enables BRIDGE_TOKEN. Keep empty in VCS. -->
+    <string translatable="false" name="jukebox_bridge_token"></string>
+</resources>

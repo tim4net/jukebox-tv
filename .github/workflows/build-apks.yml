@@ -1,0 +1,217 @@
+name: Build Jukebox APKs
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Publish = every build that can end up on devices via the updater.
+      # These runs MUST be signed with the single Jukebox release key.
+      PUBLISH_RUN: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master' }}
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK components
+        run: sdkmanager --install "ndk;21.0.6113669" "build-tools;30.0.3" "platforms;android-34"
+
+      - name: Set up signing keystore
+        env:
+          JUKEBOX_KEYSTORE_B64: ${{ secrets.JUKEBOX_KEYSTORE_B64 }}
+          JUKEBOX_KEYSTORE_PASSWORD: ${{ secrets.JUKEBOX_KEYSTORE_PASSWORD }}
+          JUKEBOX_KEY_ALIAS: ${{ secrets.JUKEBOX_KEY_ALIAS }}
+          JUKEBOX_KEY_PASSWORD: ${{ secrets.JUKEBOX_KEY_PASSWORD }}
+        run: |
+          if [ -n "$JUKEBOX_KEYSTORE_B64" ]; then
+            echo "$JUKEBOX_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/jukebox.jks"
+            printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+              "$RUNNER_TEMP/jukebox.jks" "$JUKEBOX_KEYSTORE_PASSWORD" "$JUKEBOX_KEY_ALIAS" "$JUKEBOX_KEY_PASSWORD" \
+              > "$RUNNER_TEMP/keystore.properties"
+            echo "JUKEBOX_KEYSTORE_PROPERTIES=$RUNNER_TEMP/keystore.properties" >> "$GITHUB_ENV"
+            echo "SIGNED=true" >> "$GITHUB_ENV"
+          elif [ "$PUBLISH_RUN" = "true" ]; then
+            # Tags and master are published (GitHub Release + install manifest); an unsigned or
+            # differently-signed build there would brick in-app updates for users, so refuse.
+            echo "::error::Signing secrets missing on a publish run (tag/master). Refusing to build."
+            exit 1
+          else
+            # Branch build without secrets: sign with the debug key so the APK is installable,
+            # but it is NOT publishable (no manifest, artifact marked unsigned-dev).
+            KS="$RUNNER_TEMP/debug.jks"
+            keytool -genkeypair -keystore "$KS" -storepass android -keypass android \
+              -alias androiddebugkey -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -validity 10000
+            printf 'storeFile=%s\nstorePassword=android\nkeyAlias=androiddebugkey\nkeyPassword=android\n' \
+              "$KS" > "$RUNNER_TEMP/keystore.properties"
+            echo "JUKEBOX_KEYSTORE_PROPERTIES=$RUNNER_TEMP/keystore.properties" >> "$GITHUB_ENV"
+            echo "SIGNED=false" >> "$GITHUB_ENV"
+            echo "::warning::JUKEBOX_KEYSTORE_B64 is empty; branch build signed with the debug key (not publishable)."
+          fi
+
+      - name: Run unit tests (stjukebox)
+        run: bash ./gradlew --no-daemon :smarttubetv:testStjukeboxDebugUnitTest :common:testStjukeboxDebugUnitTest
+
+      - name: Build Jukebox (stjukebox release)
+        run: bash ./gradlew --no-daemon :smarttubetv:assembleStjukeboxRelease
+
+      - name: Make update manifest (latest.json)
+        if: env.PUBLISH_RUN == 'true'
+        env:
+          JUKEBOX_COMMIT: ${{ github.sha }}
+        run: |
+          # Deterministic builtAt: commit time (fall back to git for non-push events)
+          EPOCH="$(git log -1 --pretty=%ct)"
+          SOURCE_DATE_EPOCH="$EPOCH" \
+            scripts/make-update-manifest.sh \
+            smarttubetv/build/outputs/apk/stjukebox/release \
+            smarttubetv/build/outputs/apk/stjukebox/release/latest.json
+
+      - name: Compute artifact name
+        run: |
+          if [ "$PUBLISH_RUN" = "true" ]; then
+            NAME="jukebox-apks"
+          elif [ "$SIGNED" = "true" ]; then
+            NAME="jukebox-apks-signed"  # branch build with the real key: signed but not published
+          else
+            NAME="jukebox-apks-unsigned-dev"  # debug-key branch build; never publish this
+          fi
+          echo "ARTIFACT_NAME=$NAME" >> "$GITHUB_ENV"
+
+      - name: Upload APKs (artifacts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          if-no-files-found: error
+          path: |
+            smarttubetv/build/outputs/apk/stjukebox/release/Jukebox_*_armeabi-v7a.apk
+            smarttubetv/build/outputs/apk/stjukebox/release/Jukebox_*_arm64-v8a.apk
+
+      - name: Upload update manifest (artifact)
+        # latest.json only exists on publish runs (tag/master); skip on branch builds
+        if: env.PUBLISH_RUN == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jukebox-update-manifest
+          if-no-files-found: error
+          path: smarttubetv/build/outputs/apk/stjukebox/release/latest.json
+
+      - name: Attach APKs + manifest to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            smarttubetv/build/outputs/apk/stjukebox/release/Jukebox_*_armeabi-v7a.apk
+            smarttubetv/build/outputs/apk/stjukebox/release/Jukebox_*_arm64-v8a.apk
+            smarttubetv/build/outputs/apk/stjukebox/release/latest.json
+
+      # - name: Upload to R2 (TODO: scoped token from Bou)
+      #   run: |
+      #     # Order matters: APKs first, latest.json LAST so clients never see a manifest
+      #     # pointing at APKs that are not uploaded yet.
+      #     # R2 bucket: jukebox-apks
+      #     # keys: apk/<versionCode>/Jukebox_<versionName>_<abi>.apk  (this is already
+      #     #  the build output name for the stjukebox flavor; no rename needed)
+      #     # manifest key: install/latest.json
+      #     echo "TODO: upload with a scoped token from Bou (aws s3 cp / wrangler r2 object put)"
+
+  emulator-smoke:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK components
+        run: sdkmanager --install "ndk;21.0.6113669" "build-tools;30.0.3" "platforms;android-34" "platforms;android-26" "system-images;android-26;google_apis;x86_64"
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: AVD cache
+        uses: actions/cache@v4
+        id: avdcache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-26-x86_64-google_apis-v1
+
+      - name: Build + install + launch smoke test on emulator (api 26)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 26
+          arch: x86_64
+          target: google_apis
+          emulator-boot-timeout: 900
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          disable-animations: true
+          script: |
+            set -x
+            bash ./gradlew --no-daemon :smarttubetv:assembleStjukeboxDebug
+
+            APK="$(ls smarttubetv/build/outputs/apk/stjukebox/debug/Jukebox_*_universal.apk)"
+            adb install -r "$APK"
+
+            adb logcat -c
+            # Leanback launch (Fire TV style); fall back to the phone launcher category
+            adb shell monkey -p net.tfour.jukebox -c android.intent.category.LEANBACK_LAUNCHER 1 \
+              || adb shell monkey -p net.tfour.jukebox -c android.intent.category.LAUNCHER 1
+
+            sleep 20
+            test -n "$(adb shell pidof net.tfour.jukebox)" || { echo "app process not running after launch"; adb logcat -d; exit 1; }
+
+            if adb logcat -d | grep -q "FATAL EXCEPTION"; then
+              echo "FATAL EXCEPTION found in logcat"; adb logcat -d; exit 1
+            fi
+
+            # VIEW intent with a youtube watch URL (the share/"open with" path). -p is not
+            # supported by `am start` on api 24, so fall back to the explicit component
+            # (SplashActivity owns the VIEW intent-filter for youtube.com links).
+            adb shell am start -a android.intent.action.VIEW -d "https://www.youtube.com/watch?v=dQw4w9WgXcQ" -p net.tfour.jukebox \
+              || adb shell am start -a android.intent.action.VIEW -d "https://www.youtube.com/watch?v=dQw4w9WgXcQ" \
+                   -n net.tfour.jukebox/com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity
+            sleep 10
+            test -n "$(adb shell pidof net.tfour.jukebox)" || { echo "app process died after VIEW intent"; adb logcat -d; exit 1; }
+            if adb logcat -d | grep -q "FATAL EXCEPTION"; then
+              echo "FATAL EXCEPTION found in logcat after VIEW intent"; adb logcat -d; exit 1
+            fi
+            echo "emulator smoke test passed"
