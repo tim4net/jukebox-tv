@@ -23,9 +23,13 @@ import java.util.EnumMap;
 import java.util.Map;
 
 /**
- * TV join screen (stjukebox flavor only, second launcher entry): big QR of the join URL,
+ * TV join screen (stjukebox flavor only, the launcher entry): big QR of the join URL,
  * the 6-char code, connection status and now-playing. Starting the room here keeps it
  * running process-wide after the activity is left.
+ *
+ * Because this activity is the launch intent target, view intents aimed at the browser
+ * (ATV channels/recommendations, global search) also resolve here; those are forwarded
+ * unchanged to {@link SplashActivity} instead (see {@link #maybeForwardToMain(Intent)}).
  */
 public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listener {
     private static final int QR_SIZE_PX = 512;
@@ -39,6 +43,10 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (maybeForwardToMain(getIntent())) {
+            finish();
+            return;
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(R.layout.jukebox_join);
 
@@ -59,8 +67,40 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     }
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (maybeForwardToMain(intent)) {
+            finish();
+        }
+    }
+
+    /**
+     * Forwards view intents (any action other than MAIN, or a data Uri) to
+     * {@link SplashActivity} unchanged (action, data, extras, flags) and returns true.
+     * Plain launcher launches (MAIN or no action, without data) stay on the join screen.
+     */
+    private boolean maybeForwardToMain(Intent intent) {
+        if (intent == null) {
+            return false;
+        }
+        String action = intent.getAction();
+        boolean plainLaunch = intent.getData() == null
+                && (action == null || Intent.ACTION_MAIN.equals(action));
+        if (plainLaunch) {
+            return false;
+        }
+        Intent forwarded = new Intent(intent);
+        forwarded.setClassName(getPackageName(), SplashActivity.class.getName());
+        startActivity(forwarded);
+        return true;
+    }
+
+    @Override
     protected void onStart() {
         super.onStart();
+        if (isFinishing()) {
+            return; // forwarded launch: no UI was created and no room was started
+        }
         JukeboxRoom room = JukeboxRoom.instance(this);
         room.addListener(this);
         bind(room.getCode(), room.getJoinUrl(), room.getStatus(), room.getNowPlaying());
