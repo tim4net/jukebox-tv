@@ -64,15 +64,18 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     @Override
     public void onInit() {
         ensureJoinBadge();
+        updatePopupOverlay();
     }
 
     @Override
     public void onViewResumed() {
         ensureJoinBadge();
+        updatePopupOverlay();
     }
 
     @Override
     public void onVideoLoaded(Video item) {
+        updatePopupOverlay();
         if (!JukeboxRoom.isRoomActive()) {
             return;
         }
@@ -151,6 +154,8 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     @Override
     public void onPlayEnd() {
         stopHeartbeat();
+        // Playback of the room song is over: drop any pop-up bubbles.
+        dismissPopupOverlay();
         if (!JukeboxRoom.isRoomActive()) {
             return;
         }
@@ -167,21 +172,31 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         stopHeartbeat();
         mLoadedVideoId = null;
         resetReopen();
+        dismissPopupOverlay();
     }
 
     @Override
     public void onRoomUpdated() {
         ensureJoinBadge();
+        updatePopupOverlay();
     }
 
     @Override
     public void onStatusChanged(String status) {
-        // Badge shows code, QR and host, not connection status.
+        // Badge shows code, QR and host, not connection status. The overlay check is
+        // cheap: song/settings may have been cleared on the closed/stopped/idle paths.
+        updatePopupOverlay();
     }
 
     @Override
     public void onStateChanged(String nowPlaying) {
         // Badge does not show the now-playing title.
+        updatePopupOverlay();
+    }
+
+    @Override
+    public void onPopupsChanged(boolean enabled) {
+        updatePopupOverlay();
     }
 
     private void reportState(String state) {
@@ -283,5 +298,40 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         }
         JukeboxRoom room = JukeboxRoom.instance(activity);
         JukeboxJoinBadge.show(activity, room.getCode(), room.getJoinUrl());
+    }
+
+    /** Shows/refreshes (or removes) the pop-up bubble overlay, mirroring {@link #ensureJoinBadge()}. */
+    private void updatePopupOverlay() {
+        Activity activity = getActivity();
+        PlaybackView player = getPlayer();
+        Activity host = player != null ? ViewManager.getMotherActivity(player) : null;
+        if (activity == null || host == null || activity != host) {
+            return;
+        }
+        Context ctx = getContext();
+        if (ctx == null) {
+            return;
+        }
+        JukeboxRoom room = JukeboxRoom.instance(ctx);
+        String videoId = JukeboxRoom.isRoomActive() && room.isPopupsEnabled()
+                ? room.getCurrentVideoId() : null;
+        if (!JukeboxProtocol.isValidVideoId(videoId)) {
+            JukeboxPopupOverlay.dismiss(activity);
+            return;
+        }
+        final String roomVideoId = videoId;
+        JukeboxPopupOverlay.show(activity, room.getOrigin(), roomVideoId, () -> {
+            // Only bubble along the room song itself; a negative position hides/idles.
+            PlaybackView p = getPlayer();
+            Video v = p != null ? p.getVideo() : null;
+            return v != null && roomVideoId.equals(v.videoId) ? p.getPositionMs() : -1L;
+        });
+    }
+
+    private void dismissPopupOverlay() {
+        Activity activity = getActivity();
+        if (activity != null) {
+            JukeboxPopupOverlay.dismiss(activity);
+        }
     }
 }

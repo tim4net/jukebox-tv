@@ -26,6 +26,10 @@ public final class JukeboxRoom {
         void onRoomUpdated();
         void onStatusChanged(String status);
         void onStateChanged(String nowPlaying);
+
+        /** Host popups setting changed (last "state" message). */
+        default void onPopupsChanged(boolean enabled) {
+        }
     }
 
     private static volatile JukeboxRoom sInstance;
@@ -85,6 +89,16 @@ public final class JukeboxRoom {
                 }
             });
         }
+
+        @Override
+        public void onPopups(final boolean enabled) {
+            mMainHandler.post(() -> {
+                mPopupsEnabled = enabled;
+                for (Listener listener : mListeners) {
+                    listener.onPopupsChanged(enabled);
+                }
+            });
+        }
     };
 
     private HandlerThread mThread;
@@ -96,6 +110,7 @@ public final class JukeboxRoom {
     private volatile String mJoinUrl;
     private volatile String mStatus;
     private volatile String mNowPlaying;
+    private volatile boolean mPopupsEnabled;
 
     public static JukeboxRoom instance(Context context) {
         JukeboxRoom room = sInstance;
@@ -157,6 +172,14 @@ public final class JukeboxRoom {
             mThreadHandler.post(client::stop);
         }
         JukeboxMode.setSongSet(false);
+        if (mPopupsEnabled) {
+            mPopupsEnabled = false;
+            mMainHandler.post(() -> {
+                for (Listener listener : mListeners) {
+                    listener.onPopupsChanged(false);
+                }
+            });
+        }
     }
 
     public boolean isActive() {
@@ -193,6 +216,11 @@ public final class JukeboxRoom {
 
     public String getNowPlaying() {
         return mNowPlaying;
+    }
+
+    /** True while the host enabled pop-ups in the latest room "state" (default off). */
+    public boolean isPopupsEnabled() {
+        return mPopupsEnabled;
     }
 
     /** Mirrors {@link JukeboxRoomClient}'s current song onto {@link JukeboxMode}. */

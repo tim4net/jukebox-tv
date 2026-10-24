@@ -1,7 +1,14 @@
 package net.tfour.jukebox.room;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Set;
 
 /**
  * Pure (no Android deps besides org.json) encoder/decoder for the jukebox room protocol.
@@ -16,7 +23,7 @@ import org.json.JSONObject;
  * Server -> client:
  *   {"t":"bridge-ack"}
  *   {"t":"play","song":{"songId":S,"videoId":V,"title":T,"durationMs":N|null}}
- *   {"t":"state","room":R,"nowPlaying":{...}|null,"queue":[...],"listeners":N}
+ *   {"t":"state","room":R,"nowPlaying":{...}|null,"queue":[...],"listeners":N[,"popups":B|"settings":{"popups":B}]}
  *   {"t":"pong","c":N,"s":N}
  *   {"t":"error","code":C}
  *   {"t":"closed","room":R}
@@ -34,6 +41,9 @@ public final class JukeboxProtocol {
     public static final String TYPE_ERROR = "error";
     public static final String TYPE_CLOSED = "closed";
     public static final String TYPE_UNKNOWN = "unknown";
+
+    /** How long a pop-up bubble stays on screen: position window [atSec, atSec + 6s). */
+    public static final long POPUP_WINDOW_MS = 6_000L;
 
     private static final String VIDEO_ID_PATTERN = "^[A-Za-z0-9_-]{11}$";
 
@@ -146,10 +156,90 @@ public final class JukeboxProtocol {
                 nowPlayingTitle = stringify(nowPlaying, "title");
             }
             String errorCode = stringify(json, "code");
-            return new Message(type, songId, videoId, title, durationMs, listeners, nowPlayingTitle, nowPlayingNull, errorCode);
+            boolean popupsEnabled = Boolean.TRUE.equals(json.opt("popups"));
+            JSONObject settings = json.optJSONObject("settings");
+            if (!popupsEnabled && settings != null) {
+                popupsEnabled = Boolean.TRUE.equals(settings.opt("popups"));
+            }
+            return new Message(type, songId, videoId, title, durationMs, listeners, nowPlayingTitle, nowPlayingNull, errorCode, popupsEnabled);
         } catch (JSONException e) {
             return unknown();
         }
+    }
+
+    /**
+     * Parses a GET /api/popups/&lt;videoId&gt; response: {"videoId":V,"bubbles":[{"atSec":N,"text":S}]}.
+     * Returns the bubbles sorted by atSec, or null when the payload is malformed. An empty
+     * array yields an empty list (valid, nothing to show).
+     */
+    public static List<Bubble> parsePopups(String json) {
+        if (json == null) {
+            return null;
+        }
+        try {
+            JSONObject obj = new JSONObject(json);
+            Object bubblesValue = obj.opt("bubbles");
+            if (!(bubblesValue instanceof JSONArray)) {
+                return null;
+            }
+            JSONArray arr = (JSONArray) bubblesValue;
+            List<Bubble> result = new ArrayList<>();
+            for (int i = 0; i < arr.length(); i++) {
+                Object entry = arr.opt(i);
+                if (!(entry instanceof JSONObject)) {
+                    continue;
+                }
+                JSONObject bubble = (JSONObject) entry;
+                Object at = bubble.opt("atSec");
+                Object text = bubble.opt("text");
+                if (!(at instanceof Number) || !(text instanceof String)) {
+                    continue;
+                }
+                double atSec = ((Number) at).doubleValue();
+                String value = ((String) text).trim();
+                if (Double.isNaN(atSec) || Double.isInfinite(atSec) || atSec < 0 || value.isEmpty()) {
+                    continue;
+                }
+                result.add(new Bubble(atSec, value));
+            }
+            Collections.sort(result, new Comparator<Bubble>() {
+                @Override
+                public int compare(Bubble a, Bubble b) {
+                    return Double.compare(a.atSec, b.atSec);
+                }
+            });
+            return result;
+        } catch (JSONException e) {
+            return null;
+        }
+    }
+
+    /** True while positionMs falls in the bubble's [atSec, atSec + {@link #POPUP_WINDOW_MS}) window. */
+    public static boolean isBubbleActive(Bubble bubble, long positionMs) {
+        if (bubble == null || positionMs < 0) {
+            return false;
+        }
+        long startMs = bubble.startMs();
+        return positionMs >= startMs && positionMs < startMs + POPUP_WINDOW_MS;
+    }
+
+    /**
+     * Index of the first bubble (in atSec order) whose window contains positionMs and that has
+     * not been shown yet (its index is not in shownIndexes), or -1. Pure function.
+     */
+    public static int selectBubble(List<Bubble> bubbles, long positionMs, Set<Integer> shownIndexes) {
+        if (bubbles == null || positionMs < 0) {
+            return -1;
+        }
+        for (int i = 0; i < bubbles.size(); i++) {
+            if (shownIndexes != null && shownIndexes.contains(i)) {
+                continue;
+            }
+            if (isBubbleActive(bubbles.get(i), positionMs)) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /**
@@ -230,7 +320,25 @@ public final class JukeboxProtocol {
     }
 
     private static Message unknown() {
-        return new Message(TYPE_UNKNOWN, null, null, null, null, -1, null, false, null);
+        return new Message(TYPE_UNKNOWN, null, null, null, null, -1, null, false, null, false);
+    }
+
+    /**
+     * One "Pop-Up Video" bubble from GET /api/popups/&lt;videoId&gt;.
+     */
+    public static final class Bubble {
+        /** When to pop the bubble, in seconds from the start of the video. */
+        public final double atSec;
+        public final String text;
+
+        Bubble(double atSec, String text) {
+            this.atSec = atSec;
+            this.text = text;
+        }
+
+        long startMs() {
+            return Math.round(atSec * 1000.0d);
+        }
     }
 
     /**
@@ -246,9 +354,11 @@ public final class JukeboxProtocol {
         private final String mNowPlayingTitle;
         private final boolean mNowPlayingNull;
         private final String mErrorCode;
+        private final boolean mPopupsEnabled;
 
         private Message(String type, String songId, String videoId, String title, Long durationMs,
-                        int listeners, String nowPlayingTitle, boolean nowPlayingNull, String errorCode) {
+                        int listeners, String nowPlayingTitle, boolean nowPlayingNull, String errorCode,
+                        boolean popupsEnabled) {
             mType = type;
             mSongId = songId;
             mVideoId = videoId;
@@ -258,6 +368,7 @@ public final class JukeboxProtocol {
             mNowPlayingTitle = nowPlayingTitle;
             mNowPlayingNull = nowPlayingNull;
             mErrorCode = errorCode;
+            mPopupsEnabled = popupsEnabled;
         }
 
         public String getType() {
@@ -297,6 +408,14 @@ public final class JukeboxProtocol {
 
         public String getErrorCode() {
             return mErrorCode;
+        }
+
+        /**
+         * True only when a "state" message explicitly carries boolean {@code popups}==true or
+         * {@code settings.popups}==true. Missing or other values mean OFF (default off).
+         */
+        public boolean isPopupsEnabled() {
+            return mPopupsEnabled;
         }
     }
 }

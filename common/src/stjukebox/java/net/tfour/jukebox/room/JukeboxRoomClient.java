@@ -48,6 +48,10 @@ public class JukeboxRoomClient {
         void onPlay(String songId, String videoId, String title);
         void onStatus(String status);
         void onState(String nowPlayingTitle, int listeners);
+
+        /** Host popups setting carried by the latest "state" message (strict boolean, default off). */
+        default void onPopups(boolean enabled) {
+        }
     }
 
     /** Thrown by {@link Http} implementations for non-2xx HTTP responses. */
@@ -349,6 +353,7 @@ public class JukeboxRoomClient {
                 clearSongLocked();
             }
             mListener.onState(message.getNowPlayingTitle(), message.getListeners());
+            mListener.onPopups(message.isPopupsEnabled());
         } else if (JukeboxProtocol.TYPE_CLOSED.equals(type)) {
             handleClosedLocked();
         }
