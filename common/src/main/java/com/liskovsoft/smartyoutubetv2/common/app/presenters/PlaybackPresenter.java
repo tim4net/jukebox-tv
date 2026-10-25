@@ -67,7 +67,11 @@ public class PlaybackPresenter extends BasePresenter<PlaybackView> implements Pl
         mEventListeners.add(new ChatController());
         mEventListeners.add(new CommentsController());
         // Jukebox fork hook: flavor-only controller, absent in other flavors
-        try { mEventListeners.add((PlayerEventListener) Class.forName("net.tfour.jukebox.room.JukeboxRoomController").getDeclaredConstructor().newInstance()); } catch (Throwable ignored) { }
+        try {
+            mEventListeners.add((PlayerEventListener) Class.forName("net.tfour.jukebox.room.JukeboxRoomController").getDeclaredConstructor().newInstance());
+        } catch (Throwable t) {
+            android.util.Log.e("JukeboxRoom", "controller load failed", t);
+        }
     }
 
     public static PlaybackPresenter instance(Context context) {

@@ -21,6 +21,7 @@ import com.liskovsoft.smartyoutubetv2.common.app.views.ViewManager;
  * different video loads. SmartTube autoplay-next is gated the same way via {@code JukeboxMode}.
  */
 public class JukeboxRoomController extends BasePlayerController implements JukeboxRoom.Listener {
+    private static final String LOG_TAG = "JukeboxPopup";
     private static final long HEARTBEAT_MS = 5_000;
     private static final int MAX_REOPEN_ATTEMPTS = 2;
 
@@ -47,7 +48,10 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
                 stopHeartbeat();
                 return;
             }
-            JukeboxRoom.instance(ctx).reportProgress(
+            JukeboxRoom room = JukeboxRoom.instance(ctx);
+            JukeboxLog.i(LOG_TAG, "pos=" + player.getPositionMs() + "ms player=" + mLoadedVideoId
+                    + " room=" + room.getCurrentVideoId());
+            room.reportProgress(
                     mLoadedVideoId,
                     toSec(player.getDurationMs()),
                     toSec(player.getPositionMs()));
@@ -306,16 +310,28 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         PlaybackView player = getPlayer();
         Activity host = player != null ? ViewManager.getMotherActivity(player) : null;
         if (activity == null || host == null || activity != host) {
+            JukeboxLog.i(LOG_TAG, "skip: host mismatch");
             return;
         }
         Context ctx = getContext();
         if (ctx == null) {
+            JukeboxLog.i(LOG_TAG, "skip: no context");
             return;
         }
         JukeboxRoom room = JukeboxRoom.instance(ctx);
-        String videoId = JukeboxRoom.isRoomActive() && room.isPopupsEnabled()
-                ? room.getCurrentVideoId() : null;
+        if (!JukeboxRoom.isRoomActive()) {
+            JukeboxLog.i(LOG_TAG, "skip: room inactive");
+            JukeboxPopupOverlay.dismiss(activity);
+            return;
+        }
+        if (!room.isPopupsEnabled()) {
+            JukeboxLog.i(LOG_TAG, "skip: popups=false");
+            JukeboxPopupOverlay.dismiss(activity);
+            return;
+        }
+        String videoId = room.getCurrentVideoId();
         if (!JukeboxProtocol.isValidVideoId(videoId)) {
+            JukeboxLog.i(LOG_TAG, "skip: vid=null");
             JukeboxPopupOverlay.dismiss(activity);
             return;
         }

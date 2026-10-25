@@ -1,5 +1,8 @@
 package net.tfour.jukebox.room;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.io.IOException;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
@@ -14,6 +17,8 @@ import java.util.Set;
  * a "play" for the songId that is already current never re-opens the video.
  */
 public class JukeboxRoomClient {
+    private static final String LOG_TAG = "JukeboxRoom";
+
     public interface Transport {
         void connect(String url, Callbacks cb);
         boolean send(String text);
@@ -279,7 +284,9 @@ public class JukeboxRoomClient {
         mSocketDone = false;
         mConnected = false;
         notifyStatusLocked("Connecting…");
-        mTransport.connect(webSocketUrlLocked(), new Transport.Callbacks() {
+        String url = webSocketUrlLocked();
+        JukeboxLog.i(LOG_TAG, "ws connect url=" + url + " room=" + mRoom);
+        mTransport.connect(url, new Transport.Callbacks() {
             @Override
             public void onOpen() {
                 synchronized (JukeboxRoomClient.this) {
@@ -338,6 +345,7 @@ public class JukeboxRoomClient {
             return;
         }
         notifyStatusLocked("Reconnecting…");
+        JukeboxLog.i(LOG_TAG, "reconnect backoff=" + mBackoffMs + "ms");
         mScheduler.cancelAll();
         mScheduler.schedule(retry, mBackoffMs);
         mBackoffMs = Math.min(mBackoffMs * 2, MAX_BACKOFF_MS);
@@ -347,17 +355,64 @@ public class JukeboxRoomClient {
         JukeboxProtocol.Message message = JukeboxProtocol.parse(text);
         String type = message.getType();
         if (JukeboxProtocol.TYPE_PLAY.equals(type)) {
+            JukeboxLog.i(LOG_TAG, "play vid=" + message.getVideoId() + " song=" + message.getSongId());
             handlePlayLocked(message);
         } else if (JukeboxProtocol.TYPE_STATE.equals(type)) {
+            logStateMessage(text, message);
             if (message.isNowPlayingNull()) {
                 clearSongLocked();
             }
             mListener.onState(message.getNowPlayingTitle(), message.getListeners());
             mListener.onPopups(message.isPopupsEnabled());
+        } else if (JukeboxProtocol.TYPE_BRIDGE_ACK.equals(type)) {
+            JukeboxLog.i(LOG_TAG, "bridge-ack");
         } else if (JukeboxProtocol.TYPE_CLOSED.equals(type)) {
             handleClosedLocked();
         }
-        // bridge-ack, pong, error and unknown messages need no action.
+        // pong, error and unknown messages need no action.
+    }
+
+    /**
+     * Logs a "state" message: popups flag, displayMode when present (parsed here for
+     * logging only) and the nowPlaying videoId. Never logs the bridge token.
+     */
+    private static void logStateMessage(String text, JukeboxProtocol.Message message) {
+        String nowPlaying = nowPlayingVideoId(text);
+        StringBuilder line = new StringBuilder("state: popups=").append(message.isPopupsEnabled());
+        String displayMode = optStateString(text, "displayMode");
+        if (displayMode != null) {
+            line.append(" displayMode=").append(displayMode);
+        }
+        line.append(" nowPlaying=").append(nowPlaying != null ? nowPlaying : "none");
+        JukeboxLog.i(LOG_TAG, line.toString());
+    }
+
+    /** Top-level or settings.{key} string value of a "state" message, or null (logging only). */
+    private static String optStateString(String text, String key) {
+        try {
+            JSONObject json = new JSONObject(text);
+            Object value = json.opt(key);
+            JSONObject settings = json.optJSONObject("settings");
+            if (value == null && settings != null) {
+                value = settings.opt(key);
+            }
+            return value == null || value == JSONObject.NULL ? null : String.valueOf(value);
+        } catch (JSONException e) {
+            return null;
+        }
+    }
+
+    private static String nowPlayingVideoId(String text) {
+        try {
+            JSONObject nowPlaying = new JSONObject(text).optJSONObject("nowPlaying");
+            if (nowPlaying == null) {
+                return null;
+            }
+            Object videoId = nowPlaying.opt("videoId");
+            return videoId == null || videoId == JSONObject.NULL ? null : String.valueOf(videoId);
+        } catch (JSONException e) {
+            return null;
+        }
     }
 
     private void handlePlayLocked(JukeboxProtocol.Message message) {

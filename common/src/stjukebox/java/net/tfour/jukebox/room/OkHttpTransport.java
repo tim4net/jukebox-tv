@@ -11,6 +11,8 @@ import okhttp3.WebSocketListener;
  * threads; the client marshals them through its own lock.
  */
 public class OkHttpTransport implements JukeboxRoomClient.Transport {
+    private static final String LOG_TAG = "JukeboxRoom";
+
     private final OkHttpClient mClient;
     private volatile WebSocket mWebSocket;
 
@@ -33,16 +35,19 @@ public class OkHttpTransport implements JukeboxRoomClient.Transport {
 
             @Override
             public void onClosing(WebSocket webSocket, int code, String reason) {
+                JukeboxLog.i(LOG_TAG, "ws closing code=" + code + " reason=" + reason);
                 webSocket.close(1000, null); // finish the close handshake; onClosed follows
             }
 
             @Override
             public void onClosed(WebSocket webSocket, int code, String reason) {
+                JukeboxLog.i(LOG_TAG, "ws closed code=" + code + " reason=" + reason);
                 cb.onClosed();
             }
 
             @Override
             public void onFailure(WebSocket webSocket, Throwable t, Response response) {
+                JukeboxLog.e(LOG_TAG, "ws failure", t);
                 cb.onFailure(t);
             }
         });

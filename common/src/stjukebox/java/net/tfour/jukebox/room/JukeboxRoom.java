@@ -21,6 +21,8 @@ import okhttp3.OkHttpClient;
  * come and go.
  */
 public final class JukeboxRoom {
+    private static final String LOG_TAG = "JukeboxRoom";
+
     public interface Listener {
         /** room/code/joinUrl changed (or became known). */
         void onRoomUpdated();
@@ -141,6 +143,7 @@ public final class JukeboxRoom {
 
     /** Starts (or re-attaches to) the room. Idempotent. */
     public synchronized void start() {
+        JukeboxLog.i(LOG_TAG, "start origin=" + mOrigin);
         if (mClient == null) {
             mThread = new HandlerThread("JukeboxRoom");
             mThread.start();
@@ -164,6 +167,7 @@ public final class JukeboxRoom {
     }
 
     public synchronized void stop() {
+        JukeboxLog.i(LOG_TAG, "stop");
         mActive = false;
         final JukeboxRoomClient client = mClient;
         if (client != null) {

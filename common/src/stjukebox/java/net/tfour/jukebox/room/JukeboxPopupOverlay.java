@@ -51,6 +51,7 @@ import okhttp3.ResponseBody;
  */
 public final class JukeboxPopupOverlay extends FrameLayout {
     public static final String TAG = "jukebox_popup_overlay";
+    private static final String LOG_TAG = "JukeboxPopup";
     private static final long POLL_INTERVAL_MS = 500;
     private static final long ANIM_IN_MS = 250;
     private static final long ANIM_OUT_MS = 150;
@@ -106,14 +107,20 @@ public final class JukeboxPopupOverlay extends FrameLayout {
     /** Adds/updates the overlay for the given room song. Idempotent; resets per-video state on change. */
     public static void show(Activity activity, String origin, String videoId, PositionSupplier supplier) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
+            JukeboxLog.i(LOG_TAG, "skip: activity gone");
             return;
         }
         if (activity.getWindow() == null || supplier == null
                 || origin == null || !JukeboxProtocol.isValidVideoId(videoId)) {
+            JukeboxLog.i(LOG_TAG, activity.getWindow() == null ? "skip: no window"
+                    : supplier == null ? "skip: no supplier"
+                    : origin == null ? "skip: origin null"
+                    : "skip: vid=null");
             return;
         }
         View decor = activity.getWindow().getDecorView();
         if (!(decor instanceof FrameLayout)) {
+            JukeboxLog.i(LOG_TAG, "skip: decor not FrameLayout");
             return;
         }
         FrameLayout frame = (FrameLayout) decor;
@@ -127,14 +134,14 @@ public final class JukeboxPopupOverlay extends FrameLayout {
             }
             overlay = new JukeboxPopupOverlay(activity);
             overlay.setTag(TAG);
-            android.util.DisplayMetrics metrics = activity.getResources().getDisplayMetrics();
+            // Full-screen, transparent, non-touchable host (like JukeboxJoinBadge, added to the
+            // decor): a WRAP_CONTENT overlay measured 0x0 until the first bubble arrived, so the
+            // bubble itself carries the top-left positioning instead (see showBubble()).
             FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                    LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
-            // Top-left area, away from the bottom-right QR/room-code badge.
-            lp.setMargins(Math.round(metrics.widthPixels * 0.05f),
-                    Math.round(metrics.heightPixels * 0.08f), 0, 0);
+                    LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT);
             frame.addView(overlay, lp);
             overlay.bringToFront();
+            JukeboxLog.i(LOG_TAG, "attach vid=" + videoId);
         }
         overlay.bind(origin, videoId, supplier);
     }
@@ -174,16 +181,19 @@ public final class JukeboxPopupOverlay extends FrameLayout {
 
     private void fetchBubbles(String url) {
         final int generation = ++mFetchGeneration;
+        JukeboxLog.i(LOG_TAG, "fetch url=" + url);
         Request request;
         try {
             request = new Request.Builder().url(url).get().build();
         } catch (Throwable invalidUrl) {
+            JukeboxLog.i(LOG_TAG, "fetch failed: bad url");
             return; // silent no-op
         }
         try {
             client().newCall(request).enqueue(new Callback() {
                 @Override
                 public void onFailure(Call call, IOException e) {
+                    JukeboxLog.i(LOG_TAG, "fetch failed: " + e);
                     onFetchFinished(generation, null);
                 }
 
@@ -191,10 +201,12 @@ public final class JukeboxPopupOverlay extends FrameLayout {
                 public void onResponse(Call call, Response response) throws IOException {
                     try {
                         if (!response.isSuccessful()) {
+                            JukeboxLog.i(LOG_TAG, "fetch http=" + response.code());
                             onFetchFinished(generation, null);
                             return;
                         }
                         ResponseBody body = response.body();
+                        JukeboxLog.i(LOG_TAG, "fetch http=" + response.code());
                         onFetchFinished(generation, body != null ? body.string() : null);
                     } finally {
                         response.close();
@@ -202,6 +214,7 @@ public final class JukeboxPopupOverlay extends FrameLayout {
                 }
             });
         } catch (Throwable rejected) {
+            JukeboxLog.i(LOG_TAG, "fetch failed: rejected");
             // Silent no-op.
         }
     }
@@ -215,6 +228,7 @@ public final class JukeboxPopupOverlay extends FrameLayout {
             if (bubbles == null) {
                 bubbles = Collections.emptyList();
             }
+            JukeboxLog.i(LOG_TAG, "fetch bubbles=" + bubbles.size());
             if (sCache.size() >= MAX_CACHED_VIDEOS) {
                 sCache.clear();
             }
@@ -246,16 +260,23 @@ public final class JukeboxPopupOverlay extends FrameLayout {
     }
 
     private void showBubble(int index) {
-        final BubbleView view = new BubbleView(getContext(), mBubbles.get(index).text, index);
+        final JukeboxProtocol.Bubble bubble = mBubbles.get(index);
+        final BubbleView view = new BubbleView(getContext(), bubble.text, index);
         mCurrentBubble = view;
         mCurrentIndex = index;
+        android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                 LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
-        lp.topMargin = (index % 3) * dp(64); // small stagger so bubbles don't always cover the same spot
-        lp.leftMargin = (index % 2) * dp(40);
+        // Top-left area, away from the bottom-right QR/room-code badge, plus a small stagger
+        // so bubbles don't always cover the same spot.
+        lp.setMargins(Math.round(metrics.widthPixels * 0.05f) + (index % 2) * dp(40),
+                Math.round(metrics.heightPixels * 0.08f) + (index % 3) * dp(64), 0, 0);
         view.setScaleX(0.3f);
         view.setScaleY(0.3f);
         addView(view, lp);
+        requestLayout();
+        invalidate();
+        JukeboxLog.i(LOG_TAG, "show idx=" + index + " atSec=" + bubble.atSec);
         // Pop/scale-in: 0.3 -> 1.1 (overshoot) -> 1.
         PropertyValuesHolder holder = PropertyValuesHolder.ofKeyframe("",
                 Keyframe.ofFloat(0f, 0.3f), Keyframe.ofFloat(0.7f, 1.1f), Keyframe.ofFloat(1f, 1f));
@@ -279,8 +300,11 @@ public final class JukeboxPopupOverlay extends FrameLayout {
         if (view == null) {
             return;
         }
+        JukeboxLog.i(LOG_TAG, "hide");
         if (immediate) {
             removeView(view);
+            requestLayout();
+            invalidate();
             return;
         }
         view.animate().scaleX(0.3f).scaleY(0.3f).alpha(0f).setDuration(ANIM_OUT_MS)
@@ -288,6 +312,8 @@ public final class JukeboxPopupOverlay extends FrameLayout {
                     @Override
                     public void onAnimationEnd(Animator animation) {
                         removeView(view);
+                        requestLayout();
+                        invalidate();
                     }
                 });
     }
