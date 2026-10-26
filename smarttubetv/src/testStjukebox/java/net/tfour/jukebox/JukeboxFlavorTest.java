@@ -27,4 +27,12 @@ public class JukeboxFlavorTest {
     public void appNameIsJukeboxTv() {
         assertEquals("Jukebox TV", RuntimeEnvironment.getApplication().getString(R.string.app_name));
     }
+
+    @Test
+    public void versionCodeIsTheFlavorOverride() throws Exception {
+        // Build 2465: the stjukebox flavor carries its own versionCode (2465) on
+        // top of defaultConfig's 2464, so other flavors stay unaffected.
+        assertEquals(2465, RuntimeEnvironment.getApplication().getPackageManager()
+                .getPackageInfo(RuntimeEnvironment.getApplication().getPackageName(), 0).versionCode);
+    }
 }

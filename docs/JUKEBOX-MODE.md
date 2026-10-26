@@ -148,3 +148,33 @@ easy-to-re-apply hunk.
   `scripts/upstream-merge.sh` runs.
 - Room client must be inert unless the `stjukebox` flavor is active (guard by a `BuildConfig`
   field or simply by only shipping the code in the flavor source set).
+
+## Build 2465 — reopen, remote keys, never take over the TV
+
+Findings from the 2464 device run (`.nina-2464.txt`) and their fixes:
+
+- **(a) Reopen lands on the room's exact song, playing.** `CrashRestorer.restorePlayback()`
+  (`common/src/main/.../misc/CrashRestorer.java`) no longer restores SmartTube's last-played
+  video/state while a room is active (`JukeboxMode.isAutoAdvanceBlocked()`), so a recreated
+  browse screen can never briefly load a stale video (2464: V19xtIK6Djw flashed before the
+  controller corrected). A loaded-but-paused room song is forced to `playWhenReady=true` on
+  player view resume (`JukeboxRoomController.ensureRoomSongPlaying()`), fixing the required
+  DPAD_CENTER press.
+- **(b) Remote keys are inert during a room song.** Previous used to restart the track via
+  `VideoStateController.onPreviousClicked()`'s seek-to-start (first in the controller chain) —
+  now a no-op while `JukeboxMode.isSongSet()`. Seek keys (`JukeboxMode.isSeekKeyCode()`: DPAD
+  left/right seeking, FF/REW, +/-) are consumed by the tweaked seek-bar
+  (`PlaybackTransportRowPresenter.ViewHolder`) and by `VideoPlayerGlue.rewind()/fastForward()`
+  (also the gamepad L2/R2 path). Next/previous in the loader were already gated.
+- **(c) Never take over the TV (issue #3).** Room `play` messages
+  (`JukeboxRoom.onPlay`), the controller's idle resume check (`maybeResumeRoomSong()`) and
+  mismatch reopens are gated on `JukeboxForeground.isAppInForeground()`
+  (`common/src/stjukebox/.../JukeboxForeground.java`, wraps `Utils.isAppInForegroundFixed()`):
+  while another app is in use they only update state (song flags, now-playing, pausing a
+  mismatched video) — the song opens when the user returns (join-screen re-bind or player view
+  resume re-run the checks in the foreground). Stream reminders
+  (`StreamReminderService.processMetadata()`) no longer `movePlayerToForeground()` from the
+  background in the jukebox flavor (package-scoped check; deferred, reminder kept pending). The
+  self-update path was audited: the install dialog is already foreground-gated
+  (`AppUpdatePresenter.showUpdateDialog()`), the fallback offer pins a browse row (no launch),
+  and `installUpdate()` only runs from user taps.

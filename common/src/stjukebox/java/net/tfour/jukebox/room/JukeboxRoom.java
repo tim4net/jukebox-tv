@@ -78,11 +78,21 @@ public final class JukeboxRoom {
             JukeboxMode.setSongSet(songId != null && videoId != null);
             mMainHandler.post(() -> {
                 mNowPlaying = title;
-                // Open the video BEFORE notifying the listeners: onStateChanged
-                // runs the controller's resume check, which must already see this
-                // load in flight (onNewVideo) — or it would open the same video a
-                // second time, cancelling this load.
-                PlaybackPresenter.instance(mAppContext).openVideo(videoId);
+                if (!JukeboxForeground.isAppInForeground()) {
+                    // Never take over the TV (issue #3): another app is in use, so
+                    // only update state (song flags above, now-playing here). The
+                    // song opens when the user returns: re-entering the join screen
+                    // or resuming the player re-runs the controller's resume check
+                    // in the foreground.
+                    JukeboxLog.i(LOG_TAG, "play " + videoId + " while backgrounded: deferred"
+                            + " (state updated, no openVideo)");
+                } else {
+                    // Open the video BEFORE notifying the listeners: onStateChanged
+                    // runs the controller's resume check, which must already see this
+                    // load in flight (onNewVideo) — or it would open the same video a
+                    // second time, cancelling this load.
+                    PlaybackPresenter.instance(mAppContext).openVideo(videoId);
+                }
                 for (Listener listener : mListeners) {
                     listener.onStateChanged(title);
                 }

@@ -4,6 +4,7 @@ import android.content.Context;
 import android.os.Bundle;
 
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
+import com.liskovsoft.smartyoutubetv2.common.app.models.playback.JukeboxMode;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.service.VideoStateService;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.service.VideoStateService.State;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.PlaybackPresenter;
@@ -57,6 +58,15 @@ public class CrashRestorer {
     }
 
     public void restorePlayback() {
+        // A jukebox room is active (even idle): never restore SmartTube's last-played
+        // video/state. While a room song is active the room's exact song is the only
+        // thing that may (re)open — the jukebox controller owns that — so reopening
+        // the app must not even briefly load any other (stale browse) video.
+        if (JukeboxMode.isAutoAdvanceBlocked()) {
+            mIsPlayerInForeground = false;
+            return;
+        }
+
         if (mIsPlayerInForeground && PlaybackPresenter.instance(mContext).getPlayer() == null) {
             VideoStateService stateService = VideoStateService.instance(mContext);
             boolean isVideoStateSynced = mSelectedVideo == null || stateService.getByVideoId(mSelectedVideo.videoId) != null;

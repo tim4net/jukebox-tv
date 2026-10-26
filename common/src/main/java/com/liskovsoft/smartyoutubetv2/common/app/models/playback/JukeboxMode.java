@@ -1,5 +1,7 @@
 package com.liskovsoft.smartyoutubetv2.common.app.models.playback;
 
+import android.view.KeyEvent;
+
 /**
  * Process-wide flags set by the stjukebox flavor (common/main cannot reference the
  * flavor classes, so this is the only guarded hook): {@code sRoomActive} is true while
@@ -47,6 +49,22 @@ public final class JukeboxMode {
             logBlocked();
         }
         return blocked;
+    }
+
+    /**
+     * True for key codes that seek the current video when handled by the player
+     * (seek bar / glue): DPAD left/right seeking, FF/REW and their +/- aliases.
+     * While {@link #isSongSet()} is true, callers consume these keys so the room's
+     * song can never be seeked; previous/next media keys are ignored the same way
+     * (the room owns the queue, the TV is a listener).
+     */
+    public static boolean isSeekKeyCode(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+                || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+                || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND
+                || keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD
+                || keyCode == KeyEvent.KEYCODE_MINUS
+                || keyCode == KeyEvent.KEYCODE_PLUS;
     }
 
     private static void logBlocked() {

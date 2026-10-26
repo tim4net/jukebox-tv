@@ -21,6 +21,7 @@ import com.bumptech.glide.Glide;
 import com.bumptech.glide.request.target.SimpleTarget;
 import com.bumptech.glide.request.transition.Transition;
 import com.liskovsoft.sharedutils.mylogger.Log;
+import com.liskovsoft.smartyoutubetv2.common.app.models.playback.JukeboxMode;
 import com.liskovsoft.smartyoutubetv2.common.prefs.GeneralData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerTweaksData;
 import com.liskovsoft.smartyoutubetv2.tv.R;
@@ -291,6 +292,10 @@ public class VideoPlayerGlue extends MaxControlsVideoPlayerGlue<PlayerAdapter> i
 
     /** Skips backwards 10 seconds. */
     public void rewind() {
+        // A jukebox room song is active: seeking the room's song is not allowed.
+        if (JukeboxMode.isSongSet()) {
+            return;
+        }
         long newPosition = getCurrentPosition() - TEN_SECONDS;
         newPosition = (newPosition < 0) ? 0 : newPosition;
         getPlayerAdapter().seekTo(newPosition);
@@ -298,6 +303,10 @@ public class VideoPlayerGlue extends MaxControlsVideoPlayerGlue<PlayerAdapter> i
 
     /** Skips forward 10 seconds. */
     public void fastForward() {
+        // A jukebox room song is active: seeking the room's song is not allowed.
+        if (JukeboxMode.isSongSet()) {
+            return;
+        }
         if (getDuration() > -1) {
             long newPosition = getCurrentPosition() + TEN_SECONDS;
             newPosition = Math.min(newPosition, getDuration());

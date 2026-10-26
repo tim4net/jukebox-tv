@@ -16,6 +16,7 @@ import com.liskovsoft.smartyoutubetv2.common.app.presenters.PlaybackPresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.views.ViewManager;
 import com.liskovsoft.smartyoutubetv2.common.misc.TickleManager.TickleListener;
 import com.liskovsoft.smartyoutubetv2.common.prefs.GeneralData;
+import com.liskovsoft.smartyoutubetv2.common.utils.Utils;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
 import io.reactivex.Observable;
 import io.reactivex.disposables.Disposable;
@@ -100,6 +101,15 @@ public class StreamReminderService implements TickleListener {
             video.videoId = formatInfo.getVideoId();
             video.isPending = true;
 
+            // Jukebox TV must never take over the TV (issue #3): a reminder firing
+            // while another app is in use only defers — the stream opens on a later
+            // tickle once the user is back in the app. Other flavors keep the old
+            // behavior.
+            if (isJukeboxFlavor() && !Utils.isAppInForegroundFixed()) {
+                Log.i(TAG, "Stream reminder deferred: app is in the background");
+                return;
+            }
+
             Playlist playlist = Playlist.instance();
             Video current = playlist.getCurrent();
 
@@ -117,6 +127,10 @@ public class StreamReminderService implements TickleListener {
             mGeneralData.removePendingStream(origin);
             startStop();
         }
+    }
+
+    private boolean isJukeboxFlavor() {
+        return "net.tfour.jukebox".equals(mContext.getPackageName());
     }
 
     /**

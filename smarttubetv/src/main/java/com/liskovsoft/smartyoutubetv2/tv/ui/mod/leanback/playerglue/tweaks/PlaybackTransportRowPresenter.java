@@ -40,6 +40,7 @@ import androidx.leanback.widget.Presenter;
 import androidx.leanback.widget.RowPresenter;
 
 import com.liskovsoft.sharedutils.helpers.DateHelper;
+import com.liskovsoft.smartyoutubetv2.common.app.models.playback.JukeboxMode;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.ui.SeekBarSegment;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerTweaksData;
@@ -463,6 +464,11 @@ public class PlaybackTransportRowPresenter extends PlaybackRowPresenter {
 
                 @Override
                 public boolean onKey(View view, int keyCode, KeyEvent keyEvent) {
+                    // A jukebox room song is active: seek keys (DPAD left/right seeking,
+                    // FF/REW, +/-) are consumed so the room's song can never be seeked.
+                    if (JukeboxMode.isSongSet() && JukeboxMode.isSeekKeyCode(keyCode)) {
+                        return true;
+                    }
                     // when in seek only allow this keys
                     switch (keyCode) {
                         case KeyEvent.KEYCODE_DPAD_UP:

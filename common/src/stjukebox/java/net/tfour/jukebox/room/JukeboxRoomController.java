@@ -89,6 +89,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         ensureJoinBadge();
         updatePopupOverlay();
         maybeResumeRoomSong();
+        ensureRoomSongPlaying();
     }
 
     @Override
@@ -130,6 +131,19 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         } else if (roomVideoId.equals(loadedId)) {
             resetReopen();
             mEndedVideoId = null; // the room video is (again) the loaded one
+        } else if (!JukeboxForeground.isAppInForeground()) {
+            // Never take over the TV (issue #3): while another app is in use, a
+            // mismatched (non-room) video is only paused — enforcement without
+            // launching anything. The room's exact song opens when the user
+            // returns (the resume check re-runs in the foreground).
+            JukeboxLog.i(LOG_TAG, "non-room video loaded while backgrounded: player=" + loadedId
+                    + " roomVid=" + roomVideoId + ": pausing, reopen deferred until foreground");
+            if (player != null) {
+                player.setPlayWhenReady(false);
+            }
+            stopHeartbeat();
+            mLoadedVideoId = null;
+            return;
         } else if (beginReopen(roomVideoId)) {
             // Mismatch, and this room video is not the one we're already opening.
             // The player substituted/kept a non-room video: re-open the exact room id.
@@ -338,9 +352,18 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
      * reported, never opens a song id that only a "state" snapshot provided (its
      * "play" message stays the only instruction to open a video), and never
      * duplicates a load that is still in flight.
+     *
+     * Deferred while the app is backgrounded (issue #3): opening the video would
+     * launch/foreground the player over whatever the user is watching. The check
+     * re-runs (in the foreground) when the user returns: re-entering the join
+     * screen notifies room listeners, and resuming the player view calls it again.
      */
     private void maybeResumeRoomSong() {
         if (!JukeboxRoom.isRoomActive() || mSuppressReports || mLoadedVideoId != null) {
+            return;
+        }
+        if (!JukeboxForeground.isAppInForeground()) {
+            // The song opens when the user returns; only state has been updated.
             return;
         }
         Context ctx = getContext();
@@ -363,6 +386,32 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             return; // already opening it, or the reopen cap for this song is exhausted
         }
         openRoomVideo(roomVideoId, "room song active but player idle");
+    }
+
+    /**
+     * Reopening the app (or otherwise resuming the player view) with the room's
+     * song loaded must leave that song actually playing: SmartTube's own state
+     * restore can load it paused (e.g. a saved playWhenReady=false applied on
+     * load), which used to require a DPAD_CENTER press. While a room song is
+     * active the TV is a listener — the room's song plays.
+     */
+    private void ensureRoomSongPlaying() {
+        if (!JukeboxRoom.isRoomActive() || mSuppressReports) {
+            return;
+        }
+        PlaybackView player = getPlayer();
+        Context ctx = getContext();
+        if (player == null || ctx == null) {
+            return;
+        }
+        String roomVideoId = JukeboxRoom.instance(ctx).getCurrentVideoId();
+        if (roomVideoId == null || !roomVideoId.equals(mLoadedVideoId)) {
+            return; // nothing loaded, or not the room's song
+        }
+        if (!player.getPlayWhenReady()) {
+            JukeboxLog.i(LOG_TAG, "room song " + roomVideoId + " loaded but paused on view resume: playing");
+            player.setPlayWhenReady(true);
+        }
     }
 
     /** Video id actually loaded in the player, not a previously queued id. */
