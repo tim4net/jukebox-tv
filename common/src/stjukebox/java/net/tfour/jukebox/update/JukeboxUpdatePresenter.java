@@ -33,9 +33,15 @@ import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.security.CodeSigner;
+import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.cert.Certificate;
+import java.util.Enumeration;
 import java.util.List;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 
 /**
  * Manifest check + install for the stjukebox flavor (tag {@code JukeboxUpdate}).
@@ -724,13 +730,99 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
     }
 
     /**
-     * SHA-256 (hex) of the downloaded apk's signing cert (item 2):
-     * PackageManager archive info with GET_SIGNING_CERTIFICATES (API>=28)
-     * / GET_SIGNATURES (&lt;28), first cert.
+     * SHA-256 (hex) of the downloaded apk's signing cert (item 2, Nina 2475):
+     * the v1 (JAR) signer certificate read straight from the archive with
+     * {@link JarFile} is authoritative — on API 28 (Fire OS 7)
+     * {@code getPackageArchiveInfo} returns no signingInfo/signatures for an
+     * archive — PackageManager archive parsing stays the fallback. Our
+     * release apks are v1+v2 signed (minSdk &lt; 24), so the v1 signer cert is
+     * always in the archive. Logs which method produced the cert.
      */
     protected String archiveSigningCertSha256(String path) {
-        return signingCertSha256Of(mAppContext.getPackageManager()
-                .getPackageArchiveInfo(path, archiveSigningFlags()));
+        String jarCertSha256 = jarV1SigningCertSha256(path);
+        if (jarCertSha256 != null) {
+            JukeboxLog.i(JukeboxUpdate.LOG_TAG,
+                    "archive signer: jar-v1 (JarFile) cert " + jarCertSha256);
+            return jarCertSha256;
+        }
+        String packageManagerCertSha256 = packageManagerArchiveSigningCertSha256(path);
+        JukeboxLog.i(JukeboxUpdate.LOG_TAG, "archive signer: "
+                + (packageManagerCertSha256 != null
+                        ? "package-manager" : "none (jar-v1 + package-manager)"));
+        return packageManagerCertSha256;
+    }
+
+    /**
+     * Nina 2475: SHA-256 (hex) of the single v1 (JAR) signer certificate
+     * extracted from the archive with {@link java.util.jar.JarFile},
+     * independent of PackageManager archive parsing quirks. Every
+     * non-META-INF entry must be signed by the SAME single cert (reading an
+     * entry fully is what triggers the v1 digest verification and populates
+     * its signers); null when the archive is unreadable, tampered (the digest
+     * check throws SecurityException), unsigned or multi-signed.
+     */
+    private static String jarV1SigningCertSha256(String path) {
+        try (JarFile jar = new JarFile(path)) {
+            String signerSha256 = null;
+            Enumeration<JarEntry> entries = jar.entries();
+            while (entries.hasMoreElements()) {
+                JarEntry entry = entries.nextElement();
+                if (entry.isDirectory()
+                        || entry.getName().regionMatches(true, 0, "META-INF/", 0, 9)) {
+                    continue;
+                }
+                try (InputStream in = jar.getInputStream(entry)) {
+                    byte[] buffer = new byte[64 * 1024];
+                    while (in.read(buffer) > 0) { /* full read = v1 verify */ }
+                }
+                CodeSigner[] codeSigners = entry.getCodeSigners();
+                if (codeSigners == null || codeSigners.length != 1) {
+                    return null; // unsigned or multi-signed archive: no single trusted cert
+                }
+                List<? extends Certificate> chain =
+                        codeSigners[0].getSignerCertPath().getCertificates();
+                if (chain == null || chain.isEmpty()) {
+                    return null;
+                }
+                String sha256 = hexOf(MessageDigest.getInstance("SHA-256")
+                        .digest(chain.get(0).getEncoded())); // the signer's own cert
+                if (signerSha256 == null) {
+                    signerSha256 = sha256;
+                } else if (!signerSha256.equals(sha256)) {
+                    return null; // entries signed by different certs: refuse
+                }
+            }
+            return signerSha256;
+        } catch (IOException | GeneralSecurityException | RuntimeException unreadable) {
+            return null; // tampered/unreadable archive: refused
+        }
+    }
+
+    /**
+     * Nina 2475 fallback: PackageManager archive parsing
+     * (GET_SIGNING_CERTIFICATES|GET_SIGNATURES on API&gt;=28, GET_SIGNATURES
+     * below), applicationInfo.sourceDir/publicSourceDir pointing at the
+     * archive, signingInfo read first then signatures. Null when it yields
+     * no cert (the API 28 archive quirk) — the JarFile v1 read stays
+     * authoritative.
+     */
+    private String packageManagerArchiveSigningCertSha256(String path) {
+        try {
+            PackageManager packageManager = mAppContext.getPackageManager();
+            PackageInfo info = Build.VERSION.SDK_INT >= 28
+                    ? packageManager.getPackageArchiveInfo(path,
+                            PackageManager.GET_SIGNING_CERTIFICATES
+                                    | PackageManager.GET_SIGNATURES)
+                    : packageManager.getPackageArchiveInfo(path,
+                            PackageManager.GET_SIGNATURES);
+            if (info != null && info.applicationInfo != null) {
+                info.applicationInfo.sourceDir = path;
+                info.applicationInfo.publicSourceDir = path;
+            }
+            return signingCertSha256Of(info); // signingInfo first, then signatures
+        } catch (RuntimeException tolerated) {
+            return null; // archive parsing quirks are tolerated: JarFile is authoritative
+        }
     }
 
     /**
