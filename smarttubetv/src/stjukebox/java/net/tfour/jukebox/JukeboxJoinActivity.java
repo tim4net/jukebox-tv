@@ -24,7 +24,6 @@ import net.tfour.jukebox.room.JukeboxLog;
 import net.tfour.jukebox.room.JukeboxQr;
 import net.tfour.jukebox.room.JukeboxRoom;
 import net.tfour.jukebox.room.JukeboxRoomController;
-import net.tfour.jukebox.update.JukeboxUpdate;
 
 /**
  * TV join screen (stjukebox flavor only, the launcher entry): big QR of the join URL,
@@ -199,9 +198,9 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         // room "play" would early-return in ViewManager.startView(PlaybackView)
         // and never bring the player back to the foreground.
         ViewManager.instance(this).removeTop(PlaybackActivity.class);
-        // The user is in the app on the join screen (idle): time for the
-        // throttled, logged self-update check (tag JukeboxUpdate).
-        JukeboxUpdate.maybeCheck(this);
+        // Build 2471: the self-update check is no longer gated to this screen;
+        // it runs on app-level foreground transitions on ANY activity (see
+        // JukeboxApp.init -> JukeboxUpdate.init), debounced to one per 60s.
         // Reopening with an active room song must land back in that song playing:
         // keep re-running the controller's resume check for a short while so a
         // single mistimed check (the 2465 failure) can't leave the room silent.

@@ -1,40 +1,50 @@
 package net.tfour.jukebox.update;
 
+import android.app.Activity;
+import android.app.Application;
 import android.content.Context;
-import android.os.Handler;
-import android.os.Looper;
-
-import com.liskovsoft.smartyoutubetv2.common.app.presenters.dialogs.AppUpdatePresenter;
+import android.os.Bundle;
 
 import net.tfour.jukebox.room.JukeboxForeground;
 import net.tfour.jukebox.room.JukeboxLog;
-import net.tfour.jukebox.room.JukeboxRoom;
+
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Self-update check driver for the stjukebox flavor (tag {@code JukeboxUpdate}).
  *
- * The upstream check only ever ran from the splash flow (SplashPresenter ->
- * BootDialogPresenter -> AppUpdatePresenter), which the jukebox flavor never
- * enters: its launcher is JukeboxJoinActivity, so no check — and no update
- * offer — ever happened. This driver runs the existing {@link AppUpdatePresenter}
- * machinery when the user is in the app on the join screen (idle), throttled to
- * one attempt per hour (plus the checker's own staleness), never while the app
- * is backgrounded and never while a room song is active (during playback).
- * Every decision (check / skip reason / offer) is logged so it is verifiable.
+ * Build 2471, issue #5: the check is hooked to APP-LEVEL foreground
+ * transitions (any activity), not just the join screen. {@link #init(Application)}
+ * registers an {@link Application.ActivityLifecycleCallbacks} on the app (from
+ * JukeboxApp.init, i.e. the very start of Application.onCreate), and the
+ * started-activities set going from empty to non-empty = the app was opened or
+ * returned to the foreground -> one manifest check. The old gates are gone:
+ * no join-screen-only requirement, no hourly throttle and no "never during
+ * playback" skip; a 60s in-memory debounce is the only throttle. Nothing is
+ * ever checked, shown or launched while the app is backgrounded (issue #3):
+ * the gate runs at trigger time AND again at run time (the app may have gone
+ * to the background between the two).
+ *
+ * Every decision is logged under {@code JukeboxUpdate}: foreground trigger,
+ * debounce skip (seconds left), background skip, and the URL used / result
+ * are logged by {@link JukeboxUpdatePresenter} once the check runs.
  */
 public class JukeboxUpdate {
     public static final String LOG_TAG = "JukeboxUpdate";
-    private static final String PREFS = "jukebox_update";
-    private static final String KEY_LAST_CHECK_MS = "last_check_ms";
-    /** Same settle delay the upstream splash flow uses before its boot check. */
-    static final long CHECK_DELAY_MS = 10_000;
-    static final long MIN_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+    /** At most one manifest check per 60s, however foreground transitions arrive. */
+    static final long MIN_CHECK_INTERVAL_MS = 60_000;
 
     private static volatile JukeboxUpdate sInstance;
 
     private final Context mAppContext;
-    private final Handler mHandler = new Handler(Looper.getMainLooper());
-    private AppUpdatePresenter mPresenter;
+    /** The app's STARTED activities, by identity (same shape as JukeboxForeground). */
+    private final Set<Activity> mStartedActivities = new HashSet<>();
+    private volatile Activity mResumedActivity;
+    private volatile long mLastCheckMs;
+    private Application mTrackingApp;
+    private Application.ActivityLifecycleCallbacks mCallbacks;
+    private JukeboxUpdatePresenter mPresenter;
 
     protected JukeboxUpdate(Context appContext) {
         mAppContext = appContext.getApplicationContext();
@@ -54,89 +64,172 @@ public class JukeboxUpdate {
         return instance;
     }
 
-    /** Called when the user is in the app on the join screen (e.g. activity resume). */
-    public static void maybeCheck(Context context) {
-        instance(context).scheduleCheck(CHECK_DELAY_MS);
+    /**
+     * Registers the app-level foreground-transition hook (stjukebox only, called
+     * from JukeboxApp.init at the very start of Application.onCreate so no
+     * activity of ours can ever be missed). Idempotent per app instance.
+     */
+    public static void init(Application app) {
+        if (app == null) {
+            return;
+        }
+        JukeboxUpdate update = instance(app);
+        synchronized (update) {
+            if (update.mTrackingApp == app) {
+                return; // already hooked to this app instance
+            }
+            unregister(update);
+            update.mStartedActivities.clear();
+            update.mResumedActivity = null;
+            update.mLastCheckMs = 0;
+            update.mTrackingApp = app;
+            update.mCallbacks = new Application.ActivityLifecycleCallbacks() {
+                @Override
+                public void onActivityStarted(Activity activity) {
+                    boolean wasBackgrounded;
+                    synchronized (update) {
+                        wasBackgrounded = update.mStartedActivities.isEmpty();
+                        update.mStartedActivities.add(activity);
+                    }
+                    if (wasBackgrounded) {
+                        // App opened or returned to the foreground (ANY activity):
+                        // this is the build 2471 update-check trigger. Android pauses
+                        // the old activity BEFORE the new one starts, but only STOPs
+                        // it after the new one is started, so the STARTED set never
+                        // empties mid-hop and this only fires on real transitions.
+                        update.onForegroundTransition("activity started");
+                    }
+                }
+
+                @Override
+                public void onActivityStopped(Activity activity) {
+                    // Remove by identity, never a count (see JukeboxForeground).
+                    synchronized (update) {
+                        update.mStartedActivities.remove(activity);
+                    }
+                }
+
+                @Override
+                public void onActivityResumed(Activity activity) {
+                    update.mResumedActivity = activity;
+                }
+
+                @Override
+                public void onActivityPaused(Activity activity) {
+                    // NOP: a pause must never read as backgrounded (see JukeboxForeground).
+                }
+
+                @Override
+                public void onActivityCreated(Activity activity, Bundle savedInstanceState) {
+                    // NOP
+                }
+
+                @Override
+                public void onActivitySaveInstanceState(Activity activity, Bundle outState) {
+                    // NOP
+                }
+
+                @Override
+                public void onActivityDestroyed(Activity activity) {
+                    synchronized (update) {
+                        update.mStartedActivities.remove(activity);
+                    }
+                    if (activity == update.mResumedActivity) {
+                        update.mResumedActivity = null;
+                    }
+                }
+            };
+            app.registerActivityLifecycleCallbacks(update.mCallbacks);
+            JukeboxLog.i(LOG_TAG, "init: app-level foreground transitions now trigger the update check");
+        }
+    }
+
+    /** The app's currently resumed activity (where a prompt would be attached), or null. */
+    public Activity currentActivity() {
+        return mResumedActivity;
     }
 
     /**
-     * Gates + throttle + logged decision, then the (re-gated) delayed check.
-     * Public so tests (in the room fixture package) can drive it with a custom
-     * (0 = inline) delay; production enters via {@link #maybeCheck(Context)}.
+     * The app came to the foreground: log the trigger, then run the gated,
+     * debounced manifest check. Public so tests (in the room fixture package)
+     * can drive it directly; production enters via the lifecycle callbacks.
      */
-    public void scheduleCheck(long delayMs) {
-        String skip = skipReason(true);
+    public void onForegroundTransition(String via) {
+        JukeboxLog.i(LOG_TAG, "foreground trigger (" + via + ")");
+        maybeCheck("foreground transition (" + via + ")");
+    }
+
+    /** Gates + 60s debounce + logged decision, then the (re-gated) check. */
+    public void maybeCheck(String via) {
+        String skip = skipReason();
         if (skip != null) {
             JukeboxLog.i(LOG_TAG, "skip: " + skip);
             return;
         }
-        JukeboxLog.i(LOG_TAG, "check: update manifest check scheduled in " + delayMs + "ms"
-                + " (url=latest.json, min interval " + (MIN_CHECK_INTERVAL_MS / 60000) + "min)");
-        if (delayMs <= 0) {
-            runCheck();
-        } else {
-            mHandler.postDelayed(this::runCheck, delayMs);
-        }
+        // Stamp the debounce BEFORE running: an in-flight failure below must
+        // not be retried on the very next transition.
+        mLastCheckMs = nowMs();
+        runCheck(via);
     }
 
-    private void runCheck() {
-        // Re-gated, but WITHOUT the throttle: it gates scheduling only (the
-        // stamp below is written when a check really runs). Applying it here
-        // too would make every check skip itself ("checked 0s ago").
-        String skip = skipReason(false);
-        if (skip != null) {
-            JukeboxLog.i(LOG_TAG, "skip at run time: " + skip);
+    private void runCheck(String via) {
+        // Re-gated at run time: the app may have gone to the background since
+        // the trigger. Never check, show or launch anything from the background.
+        if (!JukeboxForeground.isAppInForeground()) {
+            JukeboxLog.i(LOG_TAG, "skip at run time: app is backgrounded (issue #3)");
             return;
         }
         try {
-            JukeboxLog.i(LOG_TAG, "check: querying update manifest now");
+            JukeboxLog.i(LOG_TAG, "check: querying update manifest (" + via + ")");
             startCheck();
-        } finally {
-            // Stamp the check even if it blows up mid-flight: otherwise every
-            // later schedule (e.g. each join-screen resume) would immediately
-            // re-run a check that just crashed.
-            markChecked();
+        } catch (Throwable error) {
+            JukeboxLog.i(LOG_TAG, "check failed: " + error);
         }
     }
 
-    /** Starts the real AppUpdatePresenter check. Overridden by tests. */
+    /** Starts the real manifest check. Overridden by tests (records instead). */
     protected void startCheck() {
         if (mPresenter == null) {
-            mPresenter = new JukeboxUpdatePresenter(mAppContext);
+            mPresenter = new JukeboxUpdatePresenter(mAppContext, this::currentActivity);
         }
-        mPresenter.start(false);
+        mPresenter.startCheck();
     }
 
     /**
-     * @param includeThrottle the hourly throttle gates scheduling only: the
-     *                        run-time re-check (state may have changed during
-     *                        the settle delay) must not skip itself.
-     * @return why the check must not run right now, or null when it may run.
+     * @return why the check must not run right now (logged), or null when it may run.
      */
-    private String skipReason(boolean includeThrottle) {
+    private String skipReason() {
         if (!JukeboxForeground.isAppInForeground()) {
-            return "app is backgrounded (offers are never shown from the background)";
+            return "app is backgrounded (never check, show or launch from the background, issue #3)";
         }
-        if (!JukeboxRoom.isRoomActive()) {
-            return "no active room (join screen only)";
-        }
-        if (JukeboxRoom.instance(mAppContext).getCurrentVideoId() != null) {
-            return "room song active (never during playback)";
-        }
-        if (includeThrottle) {
-            long last = mAppContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                    .getLong(KEY_LAST_CHECK_MS, 0);
-            long since = System.currentTimeMillis() - last;
-            if (since < MIN_CHECK_INTERVAL_MS) {
-                return "throttled (checked " + (since / 1000) + "s ago)";
+        long last = mLastCheckMs;
+        if (last > 0) {
+            long left = MIN_CHECK_INTERVAL_MS - (nowMs() - last);
+            if (left > 0) {
+                return "debounced (" + ((left + 999) / 1000) + "s left of the "
+                        + (MIN_CHECK_INTERVAL_MS / 1000) + "s check interval)";
             }
         }
         return null;
     }
 
-    private void markChecked() {
-        mAppContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putLong(KEY_LAST_CHECK_MS, System.currentTimeMillis()).apply();
+    /** Clock seam for tests. */
+    protected long nowMs() {
+        return System.currentTimeMillis();
+    }
+
+    private static void unregister(JukeboxUpdate update) {
+        Application trackingApp = update.mTrackingApp;
+        Application.ActivityLifecycleCallbacks callbacks = update.mCallbacks;
+        if (trackingApp != null && callbacks != null) {
+            try {
+                trackingApp.unregisterActivityLifecycleCallbacks(callbacks);
+            } catch (RuntimeException ignored) {
+                // App already gone: nothing to unregister.
+            }
+        }
+        update.mTrackingApp = null;
+        update.mCallbacks = null;
     }
 
     /** Test seam: fixed driver instance (records instead of hitting the network). Public for tests. */
@@ -144,8 +237,17 @@ public class JukeboxUpdate {
         sInstance = update;
     }
 
-    /** Test seam. Public for tests. */
+    /** Test seam: forget the instance and unhook its lifecycle callbacks. Public for tests. */
     public static void resetForTests() {
+        JukeboxUpdate update = sInstance;
+        if (update != null) {
+            synchronized (update) {
+                unregister(update);
+                update.mStartedActivities.clear();
+                update.mResumedActivity = null;
+                update.mLastCheckMs = 0;
+            }
+        }
         sInstance = null;
     }
 }
