@@ -4,7 +4,10 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.Signature;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 
@@ -20,6 +23,7 @@ import net.tfour.jukebox.room.JukeboxLog;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -27,6 +31,8 @@ import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.List;
 
 /**
@@ -74,6 +80,12 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
     static final String DOWNLOAD_DIR = "jukebox-update";
     /** FileProvider authority (declared in the stjukebox manifest). */
     static final String PROVIDER_AUTHORITY_SUFFIX = ".jukeboxupdate";
+    /**
+     * Build 2475, item 2: the pinned SHA-256 (hex, uppercase, no spaces) of
+     * the only signing cert a downloaded update apk may carry.
+     */
+    static final String PINNED_SIGNING_CERT_SHA256 =
+            "0DC9138549DDEDF665BC48F1F717B5CF35893943699746ED93657525FDE7C609";
     /** Log/download progress step sizes. */
     private static final long PROGRESS_BYTES_STEP = 2 * 1024 * 1024; // ~2MB
     private static final int PROGRESS_PERCENT_STEP = 10; // ~10%
@@ -457,6 +469,59 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         if (versionCode != expectedVersionCode) {
             return "wrong versionCode: " + versionCode + " (offered " + expectedVersionCode + ")";
         }
+        // Build 2475, item 2: the archive's signer must be the pinned cert AND
+        // the installed app's cert (a differently signed "update" is refused).
+        String wrongSigner = signerCertFailureReason(
+                archiveSigningCertSha256(path), installedSigningCertSha256());
+        if (wrongSigner != null) {
+            return wrongSigner;
+        }
+        // Build 2475, item 2: the manifest's optional sha256 for the apk
+        // (absent = skip the file hash check; the cert pin above still applies).
+        String wrongHash = manifestSha256FailureReason(
+                manifestApkSha256(mOfferedDownloadUrl), sha256OfFile(file));
+        if (wrongHash != null) {
+            return wrongHash;
+        }
+        return null;
+    }
+
+    /**
+     * Pure item-2 decision: null when the archive's signing cert digest is
+     * the pinned constant AND the installed app's digest, else the logged
+     * reason the apk must be deleted and never launched.
+     */
+    static String signerCertFailureReason(String archiveCertSha256, String installedCertSha256) {
+        if (archiveCertSha256 == null || archiveCertSha256.trim().isEmpty()) {
+            return "wrong signer: no signing cert in the archive";
+        }
+        if (!PINNED_SIGNING_CERT_SHA256.equalsIgnoreCase(archiveCertSha256.trim())) {
+            return "wrong signer: archive cert " + archiveCertSha256
+                    + " is not the pinned cert";
+        }
+        if (installedCertSha256 == null || installedCertSha256.trim().isEmpty()) {
+            return "wrong signer: the installed app's signing cert is unknown";
+        }
+        if (!archiveCertSha256.trim().equalsIgnoreCase(installedCertSha256.trim())) {
+            return "wrong signer: the installed app is signed differently ("
+                    + installedCertSha256 + ")";
+        }
+        return null;
+    }
+
+    /**
+     * Pure item-2 decision: null when the manifest carries no sha256 for the
+     * apk (absent = skip) or the file hashes exactly as it says, else the
+     * logged reason it must be deleted and never launched.
+     */
+    static String manifestSha256FailureReason(String manifestSha256, String fileSha256) {
+        if (manifestSha256 == null || manifestSha256.trim().isEmpty()) {
+            return null; // absent = skip the file hash check
+        }
+        if (fileSha256 == null || !manifestSha256.trim().equalsIgnoreCase(fileSha256.trim())) {
+            return "sha256 mismatch: the file hashes " + fileSha256
+                    + ", the manifest says " + manifestSha256;
+        }
         return null;
     }
 
@@ -498,34 +563,103 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         return createInstallLauncher();
     }
 
-    // ---- build 2475 review seams (PHASE 1 STUBS: unused, current behavior) ----
+    // ---- build 2475 review seams (tests fake these) ----
 
     /** The versionCode installed right now (downgrade guard, item 3). Stub. */
     protected int installedVersionCode() {
         return 0;
     }
 
-    /** SHA-256 (hex) of the downloaded apk's signing cert (item 2). Stub. */
+    /**
+     * SHA-256 (hex) of the downloaded apk's signing cert (item 2):
+     * PackageManager archive info with GET_SIGNING_CERTIFICATES (API>=28)
+     * / GET_SIGNATURES (&lt;28), first cert.
+     */
     protected String archiveSigningCertSha256(String path) {
-        return null;
+        return signingCertSha256Of(mAppContext.getPackageManager()
+                .getPackageArchiveInfo(path, archiveSigningFlags()));
     }
 
-    /** SHA-256 (hex) of the installed app's signing cert (item 2). Stub. */
+    /**
+     * SHA-256 (hex) of the installed app's signing cert (item 2): the
+     * archive's signer must match the installed app's signer too.
+     */
     protected String installedSigningCertSha256() {
-        return null;
+        try {
+            return signingCertSha256Of(mAppContext.getPackageManager()
+                    .getPackageInfo(mAppContext.getPackageName(), archiveSigningFlags()));
+        } catch (PackageManager.NameNotFoundException notInstalled) {
+            return null;
+        }
     }
 
-    /** The manifest's optional sha256 for the offered apk, or null when absent (item 2). Stub. */
+    /**
+     * The manifest's optional sha256 for the offered apk, or null when
+     * absent (item 2): the manifest JSON behind {@link AppUpdateChecker}
+     * carries no per-apk sha256 entry today, so absent = skip the file
+     * hash check (the pinned-signer check above still guards the apk).
+     */
     protected String manifestApkSha256(String downloadUrl) {
         return null;
     }
 
-    /** SHA-256 (hex) of a file on disk (item 2). Stub. */
+    /** SHA-256 (hex) of a file on disk (item 2), or null when unreadable. */
     protected String sha256OfFile(File file) {
-        return null;
+        try (InputStream in = new BufferedInputStream(new FileInputStream(file))) {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = in.read(buffer)) > 0) {
+                digest.update(buffer, 0, read);
+            }
+            return hexOf(digest.digest());
+        } catch (IOException | RuntimeException | NoSuchAlgorithmException unreadable) {
+            return null;
+        }
     }
 
-    /** Download byte cap, ~200MB (item 7). Stub (unused yet). */
+    /** PackageManager flags that populate the signing certs of an archive. */
+    private static int archiveSigningFlags() {
+        return Build.VERSION.SDK_INT >= 28
+                ? PackageManager.GET_SIGNING_CERTIFICATES : PackageManager.GET_SIGNATURES;
+    }
+
+    /** SHA-256 (hex, uppercase) of the package's first signing cert, or null. */
+    private static String signingCertSha256Of(PackageInfo info) {
+        Signature[] signatures = signaturesOf(info);
+        if (signatures == null || signatures.length == 0) {
+            return null;
+        }
+        try {
+            return hexOf(MessageDigest.getInstance("SHA-256").digest(signatures[0].toByteArray()));
+        } catch (NoSuchAlgorithmException impossible) {
+            return null;
+        }
+    }
+
+    /** The signing certs of the package (SigningInfo on API>=28, signatures below). */
+    private static Signature[] signaturesOf(PackageInfo info) {
+        if (info == null) {
+            return null;
+        }
+        if (Build.VERSION.SDK_INT >= 28 && info.signingInfo != null) {
+            Signature[] history = info.signingInfo.getSigningCertificateHistory();
+            return history != null && history.length > 0 ? history : info.signatures;
+        }
+        return info.signatures;
+    }
+
+    /** Lowercase bytes as uppercase hex. */
+    private static String hexOf(byte[] digest) {
+        StringBuilder hex = new StringBuilder(digest.length * 2);
+        for (byte b : digest) {
+            hex.append(Character.forDigit((b >> 4) & 0xf, 16));
+            hex.append(Character.forDigit(b & 0xf, 16));
+        }
+        return hex.toString().toUpperCase();
+    }
+
+    /** Download byte cap, ~200MB (item 7). */
     protected long maxDownloadBytes() {
         return 200L * 1024 * 1024;
     }
