@@ -48,6 +48,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -158,9 +159,9 @@ public class JukeboxUpdateArchiveSignerTest {
         File tampered = tamperSignedEntry(fixtureApk());
         String certSha256 = realPresenter().archiveSigningCertSha256(tampered.getPath());
 
-        assertEquals("a tampered archive must be refused (no cert extracted), "
+        assertNull("a tampered archive must be refused (no cert extracted), "
                         + "never accepted as the fixture signer: " + certSha256,
-                null, certSha256);
+                certSha256);
     }
 
     /** An unsigned apk (no META-INF signatures) must be refused: no cert. */
@@ -169,7 +170,7 @@ public class JukeboxUpdateArchiveSignerTest {
         File unsigned = stripMetaInfSignatures(fixtureApk());
         String certSha256 = realPresenter().archiveSigningCertSha256(unsigned.getPath());
 
-        assertEquals("an unsigned archive must yield no signing cert", null, certSha256);
+        assertNull("an unsigned archive must yield no signing cert", certSha256);
     }
 
     // ---- Issue #9, items 4/5 (phase 1: failing tests only) ----
@@ -192,8 +193,8 @@ public class JukeboxUpdateArchiveSignerTest {
 
         String certSha256 = realPresenter().archiveSigningCertSha256(apk.getPath());
 
-        assertEquals("genuine v1 + foreign package-manager cert must be refused"
-                + " (no cert extracted), got " + certSha256, null, certSha256);
+        assertNull("genuine v1 + foreign package-manager cert must be refused"
+                + " (no cert extracted), got " + certSha256, certSha256);
     }
 
     /**
@@ -228,8 +229,8 @@ public class JukeboxUpdateArchiveSignerTest {
 
         String certSha256 = realPresenter().archiveSigningCertSha256(copied.apk.getPath());
 
-        assertEquals("a copied fixture cert signed by a different key must yield no cert",
-                null, certSha256);
+        assertNull("a copied fixture cert signed by a different key must yield no cert",
+                certSha256);
     }
 
     /**
