@@ -153,9 +153,10 @@ public class JukeboxRoomClient {
      * Test-only. Runs while a position record is being published, before that
      * record is stored. Null in production. A reader here still sees the
      * previous complete snapshot (the new video id is not yet visible). Not
-     * invoked on the clear path. Reset from the test's {@code @After}.
+     * invoked on the clear path. Per instance, so one client's hook cannot
+     * change what another client publishes.
      */
-    private static volatile Runnable sDuringPositionPublishForTests;
+    private volatile Runnable mDuringPositionPublishForTests;
     /** Song ids for which "ended" was already accepted by the socket. */
     private final Set<String> mEndedSentSongIds = new LinkedHashSet<>();
     private String mPendingEndSongId;
@@ -309,12 +310,12 @@ public class JukeboxRoomClient {
     }
 
     /**
-     * Test-only hook for {@code sDuringPositionPublishForTests}. Pass null
-     * when the test is done (and from {@code @After}) so later tests see a
-     * normal publish.
+     * Test-only. Invoked on this client while a position record is published,
+     * before that record is stored. Pass null when the test is done. Package
+     * private and per instance: there is no static test state.
      */
-    public static void setDuringPositionPublishForTests(Runnable hook) {
-        sDuringPositionPublishForTests = hook;
+    void setDuringPositionPublishForTests(Runnable hook) {
+        mDuringPositionPublishForTests = hook;
     }
 
     /** True while the current song id came from a "state" snapshot, not a "play" (lock-free). */
@@ -324,10 +325,12 @@ public class JukeboxRoomClient {
 
     /**
      * Estimated room playback position of {@code videoId} — the song the latest
-     * "state" snapshot names. {@code (paused && pausedAt ? pausedAt : serverNow)
-     * - startedAt}. The server clock advances by {@link SystemClock#elapsedRealtime()}
+     * "state" snapshot names. A playing room is {@code serverNow - startedAt},
+     * and that server clock advances by {@link SystemClock#elapsedRealtime()}
      * since the snapshot arrived, so a wall-clock step does not move the song.
-     * A paused room stays frozen at pausedAt - startedAt.
+     * A paused room with {@code pausedAt} stays frozen at {@code pausedAt -
+     * startedAt}. A paused room with no {@code pausedAt} freezes at the
+     * snapshot's own {@code serverNow} and does not advance as time passes.
      *
      * <p>{@code -1} (unknown; callers keep their usual behavior) when there is
      * no snapshot, the room is idle, the video id does not match, the snapshot
@@ -347,7 +350,11 @@ public class JukeboxRoomClient {
         if (elapsedMs < 0L) {
             elapsedMs = 0L;
         }
-        long serverNowMs = snap.serverNowMs + elapsedMs;
+        // Paused with no pausedAt: freeze at the snapshot's own serverNow.
+        // Elapsed time must not move a paused room.
+        long serverNowMs = snap.paused && snap.pausedAtMs <= 0L
+                ? snap.serverNowMs
+                : snap.serverNowMs + elapsedMs;
         long endMs = snap.paused && snap.pausedAtMs > 0L ? snap.pausedAtMs : serverNowMs;
         long posMs = endMs - snap.startedAtMs;
         if (posMs < 0L) {
@@ -605,7 +612,7 @@ public class JukeboxRoomClient {
                 message.getNowPlayingDurationMs() != null ? message.getNowPlayingDurationMs() : 0L,
                 message.getServerNowMs() != null ? message.getServerNowMs() : 0L,
                 SystemClock.elapsedRealtime());
-        Runnable duringPublish = sDuringPositionPublishForTests;
+        Runnable duringPublish = mDuringPositionPublishForTests;
         if (duringPublish != null) {
             duringPublish.run();
         }

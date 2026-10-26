@@ -86,7 +86,6 @@ public class JukeboxRoomPositionRulesTest {
 
     @Before
     public void setUp() {
-        JukeboxRoomClient.setDuringPositionPublishForTests(null);
         mRestoreNano = ShadowLooper.looperMode() == LooperMode.Mode.LEGACY;
         if (mRestoreNano) {
             mSavedNanoTime = System.nanoTime();
@@ -97,17 +96,18 @@ public class JukeboxRoomPositionRulesTest {
         store = new JukeboxRoomClientTest.MapStore();
         rec = new JukeboxRoomClientTest.Rec();
         c = new JukeboxRoomClient(JukeboxRoomClientTest.ORIGIN, t, http, sch, store, rec, "");
+        c.setDuringPositionPublishForTests(null);
         c.start();
         t.open();
     }
 
     @After
     public void tearDown() {
-        JukeboxRoomClient.setDuringPositionPublishForTests(null);
         if (mRestoreNano) {
             ShadowSystemClock.setNanoTime(mSavedNanoTime);
         }
         if (c != null) {
+            c.setDuringPositionPublishForTests(null);
             c.stop();
         }
     }
@@ -250,7 +250,7 @@ public class JukeboxRoomPositionRulesTest {
         long startedB = SERVER_EPOCH_MS + 100_000_000L;
         final long[] midV1 = {-2L};
         final long[] midV2 = {-2L};
-        JukeboxRoomClient.setDuringPositionPublishForTests(new Runnable() {
+        c.setDuringPositionPublishForTests(new Runnable() {
             @Override
             public void run() {
                 midV1[0] = c.roomPositionMs(V1);
