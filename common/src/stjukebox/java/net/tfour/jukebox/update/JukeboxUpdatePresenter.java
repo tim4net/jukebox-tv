@@ -109,6 +109,18 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
     /** Build 2477 (issue #5): neither settings screen resolves on this device. */
     static final String BOTH_UNRESOLVABLE_CARD_TEXT =
             "Allow installs from unknown sources for Jukebox in Settings, then come back";
+    /**
+     * Build 2477 (issue #7, Nina 2477): Fire OS resolves
+     * ACTION_MANAGE_UNKNOWN_APP_SOURCES to Device &amp; Software &gt; About with
+     * NO per-app toggle, so the settings intent is never launched there — the
+     * on-screen steps on the card are the whole guidance (the pending install
+     * + re-offer-on-foreground behavior stay unchanged).
+     */
+    static final String FIRE_OS_CARD_TEXT =
+            "To allow updates:\nSettings > My Fire TV > Developer options"
+                    + " > Install unknown apps > Jukebox: ON, then come back";
+    /** Issue #7: the Fire OS (Amazon) system feature, when it exists. */
+    static final String FIRE_TV_SYSTEM_FEATURE = "amazon.hardware.fire_tv";
     /** Log/download progress step sizes. */
     private static final long PROGRESS_BYTES_STEP = 2 * 1024 * 1024; // ~2MB
     private static final int PROGRESS_PERCENT_STEP = 10; // ~10%
@@ -193,7 +205,10 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             JukeboxLog.i(JukeboxUpdate.LOG_TAG, "foreground: installs are still"
                     + " not allowed (unknown apps) \u2014 keeping the pending"
                     + " install " + pending + ", re-offering");
-            runOnMain(() -> cardText(ALLOW_INSTALLS_CARD_TEXT));
+            // Issue #7: on Fire OS the unknown-apps settings are a dead end,
+            // so the card carries the full on-screen steps there.
+            runOnMain(() -> cardText(isFireOs(mAppContext)
+                    ? FIRE_OS_CARD_TEXT : ALLOW_INSTALLS_CARD_TEXT));
             return;
         }
         JukeboxLog.i(JukeboxUpdate.LOG_TAG,
@@ -1001,8 +1016,22 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         }
     }
 
-    /** Opens the system unknown-apps settings for OUR package (item (c)). */
+    /**
+     * Opens the system unknown-apps settings for OUR package (item (c)).
+     *
+     * Build 2477, issue #7: on Fire OS this intent is a dead end (it resolves
+     * to Device &amp; Software &gt; About, no per-app toggle), so it is never
+     * launched there — the card shows the on-screen steps instead, and the
+     * pending install + re-offer-on-foreground behavior stay unchanged.
+     */
     private void openUnknownAppSourcesSettings() {
+        if (isFireOs(mAppContext)) {
+            JukeboxLog.i(JukeboxUpdate.LOG_TAG, "Fire OS detected: not opening"
+                    + " the unknown-apps settings (no per-app toggle there)"
+                    + " \u2014 showing the on-screen steps on the card instead");
+            runOnMain(() -> cardText(FIRE_OS_CARD_TEXT));
+            return;
+        }
         Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                 Uri.parse("package:" + mAppContext.getPackageName()));
         settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -1038,6 +1067,22 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
      */
     protected void startActivity(Intent intent) {
         mAppContext.startActivity(intent);
+    }
+
+    /**
+     * Build 2477, issue #7: true on Fire OS (Amazon) — Build.MANUFACTURER
+     * "Amazon" and/or the {@code amazon.hardware.fire_tv} system feature.
+     * Pure device fact (no state), small and testable.
+     */
+    static boolean isFireOs(Context context) {
+        if ("Amazon".equalsIgnoreCase(Build.MANUFACTURER)) {
+            return true;
+        }
+        try {
+            return context.getPackageManager().hasSystemFeature(FIRE_TV_SYSTEM_FEATURE);
+        } catch (RuntimeException unreadable) {
+            return false;
+        }
     }
 
     private void launchInstaller(String apkPath) {

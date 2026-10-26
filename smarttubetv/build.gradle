@@ -200,7 +200,7 @@ android {
             targetSdkVersion project.properties.compileSdkVersion
             // Jukebox builds on top of the shared versionCode; keep the other
             // flavors at defaultConfig's version.
-            versionCode 2477
+            versionCode 2479
             // Submodule deps (youtubeapi) have no stjukebox flavor; fall back to ststable
             matchingFallbacks = ['ststable']
         }
