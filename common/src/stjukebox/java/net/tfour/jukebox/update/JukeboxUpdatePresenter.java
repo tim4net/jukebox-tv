@@ -906,7 +906,16 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         JukeboxLog.i(JukeboxUpdate.LOG_TAG, "opening the unknown-apps settings for "
                 + mAppContext.getPackageName() + " (NEW_TASK)");
-        mAppContext.startActivity(settings);
+        startActivity(settings);
+    }
+
+    /**
+     * Starts an activity from the app context. Seam: Fire OS can throw
+     * ActivityNotFoundException (the settings activity unresolvable), so the
+     * tests inject it here instead of the real startActivity.
+     */
+    protected void startActivity(Intent intent) {
+        mAppContext.startActivity(intent);
     }
 
     private void launchInstaller(String apkPath) {
