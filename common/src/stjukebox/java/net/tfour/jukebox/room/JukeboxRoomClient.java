@@ -148,6 +148,14 @@ public class JukeboxRoomClient {
     private volatile long mPosDurationMs;
     private volatile long mPosServerNowMs;
     private volatile long mPosReceivedAtMs;
+    /**
+     * Test-only. Runs while a position record is being published, after the
+     * video id is stored and before the rest of that record. Null in
+     * production, so capture is unchanged. A reader here must still see the
+     * previous complete snapshot (the new video id is not yet visible): one
+     * record, not a mix of two. Reset from the test's {@code @After}.
+     */
+    private static volatile Runnable sDuringPositionPublishForTests;
     /** Song ids for which "ended" was already accepted by the socket. */
     private final Set<String> mEndedSentSongIds = new LinkedHashSet<>();
     private String mPendingEndSongId;
@@ -298,6 +306,15 @@ public class JukeboxRoomClient {
     /** Video id of the song the room currently wants playing, or null. */
     public String getCurrentVideoId() {
         return mCurrentVideoId;
+    }
+
+    /**
+     * Test-only hook for {@code sDuringPositionPublishForTests}. Pass null
+     * when the test is done (and from {@code @After}) so later tests see a
+     * normal publish.
+     */
+    public static void setDuringPositionPublishForTests(Runnable hook) {
+        sDuringPositionPublishForTests = hook;
     }
 
     /** True while the current song id came from a "state" snapshot, not a "play" (lock-free). */
@@ -570,6 +587,10 @@ public class JukeboxRoomClient {
             return;
         }
         mPosVideoId = message.getNowPlayingVideoId();
+        Runnable duringPublish = sDuringPositionPublishForTests;
+        if (duringPublish != null) {
+            duringPublish.run();
+        }
         mPosPaused = message.isNowPlayingPaused();
         mPosStartedAtMs = message.getNowPlayingStartedAtMs();
         mPosPausedAtMs = message.getNowPlayingPausedAtMs() != null ? message.getNowPlayingPausedAtMs() : 0L;
