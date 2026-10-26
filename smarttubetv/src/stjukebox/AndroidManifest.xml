@@ -3,13 +3,16 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <application>
-        <!-- The only launcher entry: the TV join screen (QR + code). -->
+        <!-- The only launcher entry: the TV join screen (QR + code).
+             singleTask: repeat launches (launcher/am start/monkey) reuse the same
+             instance (onNewIntent re-attaches to the room) instead of stacking. -->
         <activity
             android:name="net.tfour.jukebox.JukeboxJoinActivity"
             android:banner="@mipmap/app_banner"
             android:icon="@mipmap/app_icon"
             android:exported="true"
             android:label="@string/app_name"
+            android:launchMode="singleTask"
             android:screenOrientation="landscape"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             tools:ignore="LockedOrientationActivity">

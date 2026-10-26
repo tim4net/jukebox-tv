@@ -15,6 +15,7 @@ import com.liskovsoft.smartyoutubetv2.tv.R;
 import com.liskovsoft.smartyoutubetv2.tv.ui.browse.BrowseActivity;
 import com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity;
 
+import net.tfour.jukebox.room.JukeboxLog;
 import net.tfour.jukebox.room.JukeboxQr;
 import net.tfour.jukebox.room.JukeboxRoom;
 
@@ -77,7 +78,25 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         super.onNewIntent(intent);
         if (maybeForwardToMain(intent)) {
             finish();
+            return;
         }
+        // Plain (re)launch of the join screen: reuse the live room socket or
+        // reconnect/heal it if it died while we were away.
+        reenterRoom("onNewIntent");
+    }
+
+    /**
+     * Re-entering the join screen re-attaches to the room: {@link JukeboxRoom#start()}
+     * is idempotent and self-healing (keeps a live connection, rebuilds/reconnects a
+     * dead one), then the UI is re-bound from the current room state.
+     */
+    private void reenterRoom(String via) {
+        JukeboxRoom room = JukeboxRoom.instance(this);
+        JukeboxLog.i("JukeboxJoin",
+                "re-enter join screen (" + via + "): room=" + room.getRoom()
+                        + " active=" + room.isActive() + " -> reuse or reconnect");
+        room.start();
+        bind(room.getCode(), room.getJoinUrl(), room.getStatus(), room.getNowPlaying());
     }
 
     /**
@@ -109,7 +128,9 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         }
         JukeboxRoom room = JukeboxRoom.instance(this);
         room.addListener(this);
-        bind(room.getCode(), room.getJoinUrl(), room.getStatus(), room.getNowPlaying());
+        // Covers every re-entry path (new instance, restart, resume): reuse the live
+        // room socket or reconnect if it is not live.
+        reenterRoom("onStart");
     }
 
     @Override

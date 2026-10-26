@@ -142,12 +142,24 @@ public class JukeboxRoomClient {
     }
 
     /**
-     * Idempotent. Reuses the saved room when its state check succeeds, otherwise creates
-     * (and saves) a new room, then connects the WebSocket. Network calls run on the
+     * Idempotent and self-healing. Reuses the saved room when its state check
+     * succeeds, otherwise creates (and saves) a new room, then connects the
+     * WebSocket. When called again while already running, a live connection is kept
+     * as is; a dead socket is reconnected immediately (no backoff wait) so that
+     * re-entering the join screen heals a stalled client. Network calls run on the
      * caller's thread; do not call this on the Android main thread.
      */
     public synchronized void start() {
         if (mRunning) {
+            if (mConnected) {
+                JukeboxLog.i(LOG_TAG, "start: reusing live connection room=" + mRoom);
+            } else {
+                JukeboxLog.i(LOG_TAG, "start: socket not live, reconnecting now room=" + mRoom);
+                mBackoffMs = INITIAL_BACKOFF_MS;
+                mScheduler.cancelAll();
+                connectSocket();
+                return;
+            }
             if (mRoom != null) {
                 notifyRoomReadyLocked();
             }
@@ -221,6 +233,11 @@ public class JukeboxRoomClient {
 
     public synchronized boolean isConnected() {
         return mConnected;
+    }
+
+    /** True between {@link #start()} and {@link #stop()} (the socket may still be down). */
+    public synchronized boolean isRunning() {
+        return mRunning;
     }
 
     /** Video id of the song the room currently wants playing, or null. */

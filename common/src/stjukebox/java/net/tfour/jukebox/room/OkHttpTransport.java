@@ -22,6 +22,18 @@ public class OkHttpTransport implements JukeboxRoomClient.Transport {
 
     @Override
     public void connect(String url, final JukeboxRoomClient.Transport.Callbacks cb) {
+        // A forced reconnect (client restart while an old socket is still around)
+        // must not leave the old WebSocket open: cancel it before connecting anew.
+        // Cancelling a socket that already failed/closed is a harmless no-op.
+        WebSocket old = mWebSocket;
+        mWebSocket = null;
+        if (old != null) {
+            try {
+                old.cancel();
+            } catch (RuntimeException ignored) {
+                // Already dead.
+            }
+        }
         mWebSocket = mClient.newWebSocket(new Request.Builder().url(url).build(), new WebSocketListener() {
             @Override
             public void onOpen(WebSocket webSocket, Response response) {

@@ -13,6 +13,19 @@ easy-to-re-apply hunk.
 
 ## Decisions & implementation status
 
+- **DECIDED (issue tim4net/jukebox-tv#2 — autoplay while in a room):** SmartTube's own
+  auto-advance (autoplay, next/suggested/related video, end-of-video advance) is
+  blocked while a room is *active* — not only while a room song is set — via
+  `JukeboxMode.isAutoAdvanceBlocked()` (`sRoomActive || sSongSet`) checked in
+  `VideoLoaderController` (`loadNext`, `onPlayEnd`, `waitMetadataSync`,
+  `loadNextVideo`, `applyPlaybackMode`). When a song ends the TV only sends
+  `next`/`ended` and waits for the server `play`, so the player never substitutes a
+  suggested upload for the room's exact `videoId`. Re-entering the join screen
+  (`JukeboxJoinActivity`, launcher entry, `singleTask`) re-attaches through
+  `JukeboxRoom.start()`, which is idempotent and self-healing: a live socket is
+  reused, a dead client/thread is rebuilt, a dead socket is reconnected immediately;
+  the only MAIN/LAUNCHER entry in the merged manifest is the join screen
+  (SplashActivity/alias filters are removed by the flavor manifest).
 - **DECIDED (open question 1 — queue playback):** the TV opens each song itself in room order.
   There is no SmartTube `Playlist` mirroring: every server `{"t":"play",...}` message ends in
   `PlaybackPresenter.openVideo(videoId)`; a `play` for the songId that is already current is

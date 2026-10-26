@@ -101,6 +101,46 @@ public class JukeboxRoomClientTest {
     }
 
     @Test
+    public void secondStartReusesLiveConnection() throws Exception {
+        c.start();
+        t.open();
+        assertEquals("Connected", rec.status);
+        c.start(); // re-entry with a live socket: keep it, no reconnect
+        assertEquals(1, t.urls.size());
+        assertEquals(1, t.count("bridge-hello"));
+        assertEquals("Connected", rec.status);
+        assertTrue(c.isRunning());
+    }
+
+    @Test
+    public void startAfterSocketDiedReconnectsImmediately() {
+        c.start();
+        t.open();
+        t.drop(); // socket dead; reconnect scheduled with backoff
+        assertEquals(1, t.urls.size());
+        c.start(); // re-entry heals: reconnect now, without waiting for the backoff
+        assertEquals(2, t.urls.size());
+        t.open();
+        assertEquals("Connected", rec.status);
+    }
+
+    @Test
+    public void popupWiringTracksRoomAndVideoIdAcrossReconnect() {
+        c.start();
+        t.open();
+        assertEquals("room1", rec.room);
+        t.msg(play("s1", V1));
+        assertEquals(V1, c.getCurrentVideoId());
+        t.drop();
+        sch.runAll(); // reconnect
+        t.open();
+        assertEquals("room1", rec.room); // room id survives the reconnect
+        t.msg(play("s2", V2)); // server re-delivers the current song after the ack
+        assertEquals(V2, c.getCurrentVideoId());
+        assertEquals("room1", rec.room);
+    }
+
+    @Test
     public void createsRoomConnectsAndSaysHello() throws Exception {
         c.start();
         assertEquals(ORIGIN + "/api/rooms", http.posts.get(0));

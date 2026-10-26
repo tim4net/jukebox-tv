@@ -19,6 +19,11 @@ import okhttp3.OkHttpClient;
  * SharedPreferences persistence. "play" messages open the video through the regular
  * {@link PlaybackPresenter} on the main thread. The room keeps running when activities
  * come and go.
+ *
+ * {@link #start()} is idempotent and self-healing: a live connection is reused, a dead
+ * client/thread/socket is rebuilt/reconnected, so re-entering the join screen can never
+ * leave the room stalled. The {@link ClientFactory}/{@link Executor} seams exist for
+ * unit tests only.
  */
 public final class JukeboxRoom {
     private static final String LOG_TAG = "JukeboxRoom";
@@ -34,11 +39,23 @@ public final class JukeboxRoom {
         }
     }
 
+    /** Builds the room client (transport stack included) running on {@code thread}. */
+    interface ClientFactory {
+        JukeboxRoomClient build(HandlerThread thread, JukeboxRoomClient.Listener listener);
+    }
+
+    /** Runs room setup/reconnect work off the main thread. */
+    interface Executor {
+        void post(Runnable r);
+    }
+
     private static volatile JukeboxRoom sInstance;
 
     private final Context mAppContext;
     private final String mOrigin;
     private final String mToken;
+    private final ClientFactory mClientFactory;
+    private final Executor mExecutor;
     private final Handler mMainHandler = new Handler(Looper.getMainLooper());
     private final CopyOnWriteArrayList<Listener> mListeners = new CopyOnWriteArrayList<>();
     private final JukeboxRoomClient.Listener mClientListener = new JukeboxRoomClient.Listener() {
@@ -120,7 +137,7 @@ public final class JukeboxRoom {
             synchronized (JukeboxRoom.class) {
                 room = sInstance;
                 if (room == null) {
-                    room = new JukeboxRoom(context.getApplicationContext());
+                    room = new JukeboxRoom(context.getApplicationContext(), null, null);
                     sInstance = room;
                 }
             }
@@ -134,46 +151,113 @@ public final class JukeboxRoom {
         return room != null && room.mActive;
     }
 
-    private JukeboxRoom(Context appContext) {
+    JukeboxRoom(Context appContext, ClientFactory clientFactory, Executor executor) {
         mAppContext = appContext;
         mOrigin = appContext.getString(R.string.jukebox_origin);
         String token = appContext.getString(R.string.jukebox_bridge_token);
         mToken = token == null ? "" : token;
+        mClientFactory = clientFactory != null ? clientFactory : this::buildRealClient;
+        mExecutor = executor != null ? executor : this::postToThreadHandler;
     }
 
-    /** Starts (or re-attaches to) the room. Idempotent. */
+    private JukeboxRoomClient buildRealClient(HandlerThread thread, JukeboxRoomClient.Listener listener) {
+        OkHttpClient httpClient = new OkHttpClient.Builder().build();
+        return new JukeboxRoomClient(
+                mOrigin,
+                new OkHttpTransport(httpClient),
+                new OkHttpHttp(httpClient),
+                new HandlerScheduler(thread.getLooper()),
+                new PrefsStore(mAppContext),
+                listener,
+                mToken);
+    }
+
+    private void postToThreadHandler(Runnable r) {
+        Handler handler = mThreadHandler;
+        if (handler != null) {
+            handler.post(r);
+        }
+    }
+
+    /**
+     * Starts (or re-attaches to) the room. Idempotent and self-healing: keeps a live
+     * client/connection, rebuilds the client (and its thread) when it is dead, and
+     * reconnects a dead socket immediately (see {@link JukeboxRoomClient#start()}).
+     * Listeners are re-notified with the current room state afterwards.
+     */
     public synchronized void start() {
-        JukeboxLog.i(LOG_TAG, "start origin=" + mOrigin);
-        if (mClient == null) {
+        String reason = rebuildReason();
+        if (reason != null) {
+            JukeboxLog.i(LOG_TAG, "start origin=" + mOrigin + ": " + reason + ", rebuilding room client");
+            final JukeboxRoomClient old = mClient;
+            if (old != null) {
+                old.clearCurrentSong();
+                old.stop();
+            }
+            if (mThread != null) {
+                mThread.quitSafely();
+                mThread = null;
+            }
+            mThreadHandler = null;
+            mClient = null;
             mThread = new HandlerThread("JukeboxRoom");
             mThread.start();
             mThreadHandler = new Handler(mThread.getLooper());
-            OkHttpClient httpClient = new OkHttpClient.Builder().build();
-            mClient = new JukeboxRoomClient(
-                    mOrigin,
-                    new OkHttpTransport(httpClient),
-                    new OkHttpHttp(httpClient),
-                    new HandlerScheduler(mThread.getLooper()),
-                    new PrefsStore(mAppContext),
-                    mClientListener,
-                    mToken);
+            mClient = mClientFactory.build(mThread, mClientListener);
+        } else {
+            JukeboxLog.i(LOG_TAG, "start origin=" + mOrigin
+                    + ": client alive (connected=" + mClient.isConnected() + "), reusing"
+                    + (mClient.isConnected() ? " live connection" : " (reconnect if socket died)"));
         }
         mActive = true;
+        JukeboxMode.setRoomActive(true);
         // Flag tracks the current song, not the socket. A fresh room is idle until "play".
         syncSongFlag();
         final JukeboxRoomClient client = mClient;
         // Room setup does blocking HTTP: keep it off the main thread.
-        mThreadHandler.post(client::start);
+        mExecutor.post(client::start);
+        // Rebind listeners/UI to the current room state (join screen, badge, overlay).
+        mMainHandler.post(this::notifyRebind);
+    }
+
+    /** @return why the client/thread must be rebuilt, or null when it is alive. */
+    private String rebuildReason() {
+        if (mThread == null || !mThread.isAlive()) {
+            return "room thread dead";
+        }
+        if (mClient == null) {
+            return "no client";
+        }
+        if (!mClient.isRunning()) {
+            return "client stopped";
+        }
+        return null;
+    }
+
+    private void notifyRebind() {
+        String room = mRoom;
+        String code = mCode;
+        String joinUrl = mJoinUrl;
+        String status = mStatus;
+        String nowPlaying = mNowPlaying;
+        boolean popups = mPopupsEnabled;
+        for (Listener listener : mListeners) {
+            listener.onRoomUpdated();
+            listener.onStatusChanged(status);
+            listener.onStateChanged(nowPlaying);
+            listener.onPopupsChanged(popups);
+        }
     }
 
     public synchronized void stop() {
         JukeboxLog.i(LOG_TAG, "stop");
         mActive = false;
+        JukeboxMode.setRoomActive(false);
         final JukeboxRoomClient client = mClient;
         if (client != null) {
             // Drop the song before the async stop, so a restart doesn't look "now playing".
             client.clearCurrentSong();
-            mThreadHandler.post(client::stop);
+            mExecutor.post(client::stop);
         }
         JukeboxMode.setSongSet(false);
         if (mPopupsEnabled) {

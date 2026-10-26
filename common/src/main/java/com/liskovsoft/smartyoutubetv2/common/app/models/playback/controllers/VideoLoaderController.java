@@ -152,9 +152,9 @@ public class VideoLoaderController extends BasePlayerController {
     }
 
     public void loadNext() {
-        // A room song is set: the server "play" message opens the next one.
-        // An idle room (no current song) keeps normal autoplay.
-        if (JukeboxMode.isSongSet()) {
+        // A jukebox room is active (even idle): the server "play" message opens the
+        // next song, so SmartTube autoplay must never substitute its own pick.
+        if (JukeboxMode.isAutoAdvanceBlocked()) {
             return;
         }
         if (getPlayer() == null || getVideo() == null) {
@@ -180,8 +180,9 @@ public class VideoLoaderController extends BasePlayerController {
             return;
         }
 
-        // A room song is set. Report song end and wait for the next "play".
-        if (JukeboxMode.isSongSet()) {
+        // A jukebox room is active. Report song end and wait for the next "play";
+        // SmartTube autoplay (suggestions) must not take over.
+        if (JukeboxMode.isAutoAdvanceBlocked()) {
             Utils.removeCallbacks(mLoadNext, mMetadataSync);
             return;
         }
@@ -238,7 +239,7 @@ public class VideoLoaderController extends BasePlayerController {
     }
 
     private void waitMetadataSync(Video current, boolean showLoadingMsg) {
-        if (JukeboxMode.isSongSet() || current == null) {
+        if (JukeboxMode.isAutoAdvanceBlocked() || current == null) {
             return;
         }
 
@@ -360,7 +361,7 @@ public class VideoLoaderController extends BasePlayerController {
     }
 
     private void loadNextVideo(int delayMs) {
-        if (JukeboxMode.isSongSet() || getPlayer() == null) {
+        if (JukeboxMode.isAutoAdvanceBlocked() || getPlayer() == null) {
             return;
         }
 
@@ -413,7 +414,7 @@ public class VideoLoaderController extends BasePlayerController {
     }
 
     private void applyPlaybackMode(int playbackMode) {
-        if (JukeboxMode.isSongSet() || getPlayer() == null) {
+        if (JukeboxMode.isAutoAdvanceBlocked() || getPlayer() == null) {
             return;
         }
 

@@ -50,7 +50,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             }
             JukeboxRoom room = JukeboxRoom.instance(ctx);
             JukeboxLog.i(LOG_TAG, "pos=" + player.getPositionMs() + "ms player=" + mLoadedVideoId
-                    + " room=" + room.getCurrentVideoId());
+                    + " room=" + room.getRoom() + " roomVid=" + room.getCurrentVideoId());
             room.reportProgress(
                     mLoadedVideoId,
                     toSec(player.getDurationMs()),
@@ -67,12 +67,14 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
 
     @Override
     public void onInit() {
+        ensureListening();
         ensureJoinBadge();
         updatePopupOverlay();
     }
 
     @Override
     public void onViewResumed() {
+        ensureListening();
         ensureJoinBadge();
         updatePopupOverlay();
     }
@@ -94,11 +96,18 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         String roomVideoId = room.getCurrentVideoId();
         if (roomVideoId == null) {
             // Idle room: a Browse pick (or anything else) plays as usual.
+            if (loadedId != null) {
+                JukeboxLog.i(LOG_TAG, "idle room: player=" + loadedId + " plays unsupervised (no current song)");
+            }
             resetReopen();
         } else if (roomVideoId.equals(loadedId)) {
             resetReopen();
         } else if (beginReopen(roomVideoId)) {
             // Mismatch, and this room video is not the one we're already opening.
+            // The player substituted/kept a non-room video: re-open the exact room id.
+            JukeboxLog.i(LOG_TAG, "non-room video loaded: player=" + loadedId
+                    + " roomVid=" + roomVideoId + " song=" + room.getRoom()
+                    + ": reopening exact room videoId (attempt " + mReopenAttempts + ")");
             stopHeartbeat();
             mLoadedVideoId = null;
             mSuppressReports = true;
@@ -118,6 +127,8 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             return;
         } else {
             // Already requested this room video, or the 2-attempt cap is hit.
+            JukeboxLog.i(LOG_TAG, "non-room video loaded: player=" + loadedId + " roomVid=" + roomVideoId
+                    + ": reopen cap reached, not reporting and not auto-advancing");
             stopHeartbeat();
             mLoadedVideoId = null;
             return;
@@ -296,12 +307,26 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         if (activity == null || host == null || activity != host) {
             return;
         }
-        if (!mListening) {
-            JukeboxRoom.instance(activity).addListener(this);
-            mListening = true;
-        }
         JukeboxRoom room = JukeboxRoom.instance(activity);
         JukeboxJoinBadge.show(activity, room.getCode(), room.getJoinUrl());
+    }
+
+    /**
+     * Registers as a {@link JukeboxRoom} listener as soon as any context exists, so
+     * room ready/reconnect/play events reach the badge and the pop-up overlay even
+     * when the room was started (or reconnected) after the player came up. Without
+     * this, the pop-up code never sees the room id and logs room=null forever.
+     */
+    private void ensureListening() {
+        if (mListening) {
+            return;
+        }
+        Context ctx = getContext();
+        if (ctx == null) {
+            return;
+        }
+        JukeboxRoom.instance(ctx).addListener(this);
+        mListening = true;
     }
 
     /** Shows/refreshes (or removes) the pop-up bubble overlay, mirroring {@link #ensureJoinBadge()}. */
@@ -331,7 +356,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         }
         String videoId = room.getCurrentVideoId();
         if (!JukeboxProtocol.isValidVideoId(videoId)) {
-            JukeboxLog.i(LOG_TAG, "skip: vid=null");
+            JukeboxLog.i(LOG_TAG, "skip: vid=null room=" + room.getRoom());
             JukeboxPopupOverlay.dismiss(activity);
             return;
         }
