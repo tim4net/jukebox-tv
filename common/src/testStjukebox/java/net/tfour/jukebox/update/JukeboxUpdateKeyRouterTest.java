@@ -206,6 +206,34 @@ public class JukeboxUpdateKeyRouterTest {
                 logged("key routed to the update card"));
     }
 
+    // ---- Nina's 2473 gazebo item (b): BACK in a second foreground activity ----
+
+    @Test
+    public void backInASecondForegroundActivityWhileTheCardIsVisibleDismissesAndIsConsumed() {
+        // 2473 gazebo: the card was attached to the OLD activity's decor just
+        // before the player launched; BACK in the player was NOT consumed by
+        // the player's router (the card was not on ITS decor) and recreated
+        // the player instead of dismissing the card.
+        Activity old = Robolectric.buildActivity(Activity.class).setup().get();
+        RecordingInstall install = new RecordingInstall();
+        JukeboxUpdateCard.show(old, "32.68", 2473, install);
+        assertNotNull("the card must be visible (attached to the old activity's decor)", cardOf(old));
+
+        // A second activity becomes the foreground one; its window gets the
+        // key router (the router of the CURRENT foreground activity).
+        RecordingActivity foreground = newActivity().get();
+
+        assertTrue("BACK DOWN must be consumed by the foreground activity's router while the card is visible",
+                dispatch(foreground, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK));
+        assertTrue("BACK UP must be consumed by the foreground activity's router while the card is visible",
+                dispatch(foreground, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK));
+        assertNull("BACK must dismiss the visible card (off the old activity's decor)",
+                cardOf(old));
+        assertEquals("BACK must never install", 0, install.calls);
+        assertNull("the foreground activity (the player) must never see the routed BACK key",
+                foreground.lastKeyEvent);
+    }
+
     @Test
     public void attachIsIdempotentAndDetachRestoresTheOriginalCallback() {
         RecordingActivity activity = newActivity().get();

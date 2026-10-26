@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.net.Uri;
+import android.provider.Settings;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
@@ -21,6 +22,7 @@ import org.robolectric.Shadows;
 import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLog;
+import org.robolectric.shadows.ShadowPackageManager;
 
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -701,5 +703,74 @@ public class JukeboxUpdateInstallTest {
         assertEquals("the deferred 2473 install must still launch", 1, presenter.launcher.calls);
         assertEquals("the kept 2473 file must be launched (not deleted as 'wrong versionCode')",
                 expectedApk().getPath(), presenter.launcher.path);
+    }
+
+    // ---- Nina's 2473 gazebo item (c): Fire OS blocks installs ("unknown apps") ----
+
+    private ShadowPackageManager shadowPm() {
+        return (ShadowPackageManager) Shadows.shadowOf(app.getPackageManager());
+    }
+
+    @Test
+    public void blockedInstallPermissionOpensSettingsWithThePackageUriAndKeepsTheVerifiedApk() {
+        TestPresenter presenter = offeredWithMatchingApk();
+        shadowPm().setCanRequestPackageInstalls(false);
+
+        presenter.install();
+
+        assertEquals("an install without the unknown-apps permission must never launch the installer",
+                0, presenter.launcher.calls);
+        assertTrue("the verified apk must be kept pending until installs are allowed",
+                expectedApk().exists());
+        Intent settings = Shadows.shadowOf(app).getNextStartedActivity();
+        assertNotNull("the user must be taken to the unknown-apps settings", settings);
+        assertEquals(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, settings.getAction());
+        assertEquals("the settings uri must name our package",
+                "package:" + app.getPackageName(), settings.getDataString());
+        assertTrue("settings must open as a new task",
+                (settings.getFlags() & Intent.FLAG_ACTIVITY_NEW_TASK) != 0);
+        assertTrue("the card must tell the user to allow installs: " + cardText(activity),
+                cardText(activity).contains("Allow Jukebox to install updates"));
+    }
+
+    @Test
+    public void allowedOnTheNextForegroundResumesThePendingInstallWithoutSettingsAgain() {
+        TestPresenter presenter = offeredWithMatchingApk();
+        shadowPm().setCanRequestPackageInstalls(false);
+        presenter.install();
+        assertEquals(0, presenter.launcher.calls);
+        assertNotNull("the settings intent must have been opened once (consumed here)",
+                Shadows.shadowOf(app).getNextStartedActivity());
+
+        // The user allowed installs and came back to the app.
+        shadowPm().setCanRequestPackageInstalls(true);
+        presenter.onAppForeground();
+
+        assertEquals("the kept pending install must resume once installs are allowed",
+                1, presenter.launcher.calls);
+        assertEquals("the pending install must launch the kept apk",
+                expectedApk().getPath(), presenter.launcher.path);
+        assertNull("no settings intent again once the install resumed",
+                Shadows.shadowOf(app).getNextStartedActivity());
+    }
+
+    @Test
+    public void stillDeniedOnTheNextForegroundDoesNotReopenSettings() {
+        TestPresenter presenter = offeredWithMatchingApk();
+        shadowPm().setCanRequestPackageInstalls(false);
+        presenter.install();
+        assertEquals(0, presenter.launcher.calls);
+        assertNotNull("the settings intent must have been opened once (consumed here)",
+                Shadows.shadowOf(app).getNextStartedActivity());
+
+        // Still denied on the next foreground: log and re-offer, but never
+        // loop reopening settings.
+        presenter.onAppForeground();
+
+        assertEquals("still denied must never launch the installer", 0, presenter.launcher.calls);
+        assertNull("settings must not be opened again while still denied",
+                Shadows.shadowOf(app).getNextStartedActivity());
+        assertTrue("the verified apk must stay pending while still denied",
+                expectedApk().exists());
     }
 }
