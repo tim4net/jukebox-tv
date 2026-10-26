@@ -46,6 +46,8 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     private static final long[] RESUME_RETRY_DELAYS_MS = {0, 1500, 3000, 5000, 8000, 12000};
 
     private ImageView mQrView;
+    /** The layout's own default-focus view; handed focus back when the room goes idle. */
+    private Button mBrowseView;
     private TextView mCodeView;
     private TextView mStatusView;
     private TextView mNowPlayingView;
@@ -76,6 +78,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         hintView.setText(getString(R.string.jukebox_join_hint, host));
 
         Button browseButton = findViewById(R.id.jukebox_browse);
+        mBrowseView = browseButton;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             // Theme tint would wash out the focused-state color.
             browseButton.setBackgroundTintList(null);
@@ -205,6 +208,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         // keep re-running the controller's resume check for a short while so a
         // single mistimed check (the 2465 failure) can't leave the room silent.
         startResumeRetry("onResume");
+        updateDefaultFocus();
     }
 
     @Override
@@ -288,6 +292,43 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         mStatusView.setText(status != null ? status : "");
         mNowPlayingView.setText(nowPlaying != null && !nowPlaying.isEmpty()
                 ? getString(R.string.jukebox_now_playing, nowPlaying) : "");
+        updateDefaultFocus();
+    }
+
+    /**
+     * Issue #8 (2477 bug 3): while the room is playing, the join screen's
+     * default focus must not be the Browse YouTube button — on the post-update
+     * cold launch a DPAD_CENTER press hit Browse and briefly loaded a
+     * non-room video. Focus the join action (the QR) instead and let OK open
+     * the player at the room video (the resume check runs its usual bounded,
+     * logged decision loop). With no active room song the layout default
+     * (Browse) stays, so the button stays reachable and unchanged otherwise.
+     */
+    private void updateDefaultFocus() {
+        if (mQrView == null) {
+            return; // forwarded launch: no UI was created
+        }
+        JukeboxRoom room = JukeboxRoom.instance(this);
+        boolean roomPlaying = room.isActive() && room.getCurrentVideoId() != null;
+        mQrView.setFocusable(roomPlaying);
+        mQrView.setClickable(roomPlaying);
+        if (roomPlaying) {
+            mQrView.setOnClickListener(v -> {
+                JukeboxLog.i("JukeboxJoin", "join action (OK on QR): opening the player at the room video");
+                startResumeRetry("onOk");
+            });
+            if (!mQrView.hasFocus()) {
+                mQrView.requestFocus();
+            }
+        } else {
+            mQrView.setOnClickListener(null);
+            if (mQrView.hasFocus() && mBrowseView != null) {
+                // The room went idle: hand the default focus back to the layout's
+                // own default (Browse) explicitly — Android gives no guarantee
+                // that a view losing focusability alone restores it.
+                mBrowseView.requestFocus();
+            }
+        }
     }
 
     @Override
@@ -305,6 +346,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     public void onStateChanged(String nowPlaying) {
         mNowPlayingView.setText(nowPlaying != null && !nowPlaying.isEmpty()
                 ? getString(R.string.jukebox_now_playing, nowPlaying) : "");
+        updateDefaultFocus();
     }
 
     /** Renders a QR code of {@code text} into a square bitmap, or null on failure. */

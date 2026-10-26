@@ -30,9 +30,9 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
      * as "a load of the room video is on its way". The engine load of an openVideo
      * settles within seconds; a marker older than this is leftover state (e.g. the
      * engine was released mid-load while the app sat backgrounded) and must never
-     * silence the room forever.
+     * silence the room forever (issue #8: 2477 stuck on the join screen 25s+).
      */
-    private static final long LOAD_IN_FLIGHT_TIMEOUT_MS = 15_000;
+    private static final long LOAD_IN_FLIGHT_TIMEOUT_MS = 8_000;
 
     private Handler mHandler;
     private boolean mHeartbeatRunning;
@@ -525,14 +525,22 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             return false;
         }
         if (roomVideoId.equals(mLoadingVideoId)) {
-            if (isLoadInFlight()) {
+            // Issue #8 (2477): the marker may only silence the resume while a
+            // load could still settle: young AND the player/activity that
+            // started it still exists. A cold launch leaves a stranded young
+            // marker behind (the launch inside openVideo never started a
+            // player activity, so no onVideoLoaded will ever come): clear it
+            // and open the player at the room video instead of skipping
+            // forever on every join tick.
+            if (isLoadInFlight() && isLoadHolderAlive()) {
                 // The engine (re)load of the room video is already on its way.
                 logResume(via, "resume skipped: load of " + roomVideoId + " in flight");
                 return false;
             }
-            logResume(via, "resume: in-flight marker " + roomVideoId
-                    + " is stale (no load finished within " + LOAD_IN_FLIGHT_TIMEOUT_MS
-                    + "ms): resuming the room song");
+            logResume(via, "resume: in-flight marker " + roomVideoId + " is stale ("
+                    + (isLoadHolderAlive() ? "no load finished within " + LOAD_IN_FLIGHT_TIMEOUT_MS + "ms"
+                            : "the player/activity that started it is gone")
+                    + "): resuming the room song");
             mLoadingVideoId = null;
             mLoadingSinceMs = 0L;
         }
@@ -588,6 +596,16 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     private boolean isLoadInFlight() {
         long since = mLoadingSinceMs;
         return since != 0L && SystemClock.uptimeMillis() - since <= LOAD_IN_FLIGHT_TIMEOUT_MS;
+    }
+
+    /**
+     * True while a player view exists — the player/activity that started the
+     * in-flight load can still settle it (fire its onVideoLoaded). A cold
+     * launch (issue #8, 2477) has no player at all: no load is really on its
+     * way, so its marker must never count as one.
+     */
+    private boolean isLoadHolderAlive() {
+        return getPlayer() != null;
     }
 
     /**
