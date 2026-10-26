@@ -5,8 +5,11 @@ import android.content.Intent;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.PlaybackPresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.views.PlaybackView;
 import com.liskovsoft.smartyoutubetv2.common.app.views.ViewManager;
+import com.liskovsoft.smartyoutubetv2.common.utils.JukeboxLaunch;
 import com.liskovsoft.smartyoutubetv2.tv.ui.browse.BrowseActivity;
 import com.liskovsoft.smartyoutubetv2.tv.ui.playback.PlaybackActivity;
+
+import net.tfour.jukebox.room.JukeboxForeground;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -47,6 +50,12 @@ public class PlaybackStartSmokeTest {
     public void setUp() throws Exception {
         resetSingleton(ViewManager.class, "sInstance");
         resetSingleton(PlaybackPresenter.class, "sInstance");
+        // This test uses a plain Application (no MainApplication), so the jukebox
+        // launch gate would never be (re-)initialized here — drop whatever an
+        // earlier test in this JVM left behind, or the backgrounded-looking gate
+        // would block openVideo's activity launch.
+        JukeboxLaunch.resetForTests();
+        JukeboxForeground.setTestOverride(null);
 
         ViewManager viewManager = ViewManager.instance(RuntimeEnvironment.getApplication());
         // Same registration MainApplication.setupViewManager() performs

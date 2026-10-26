@@ -1,5 +1,6 @@
 package com.liskovsoft.smartyoutubetv2.tv.ui.main;
 
+import android.app.Application;
 import android.os.Build.VERSION;
 
 import androidx.annotation.NonNull;
@@ -85,6 +86,26 @@ public class MainApplication extends MultiDexApplication implements Configuratio
 
         setupGlobalExceptionHandler();
         setupViewManager();
+        setupJukeboxHooks();
+    }
+
+    /**
+     * Jukebox flavor (stjukebox) process hooks: foreground tracking + the gated,
+     * logged activity-launch choke point (see JukeboxLaunch/JukeboxForeground).
+     * Other flavors don't contain the flavor class; the reflective call is
+     * skipped by the package check.
+     */
+    private void setupJukeboxHooks() {
+        if (!"net.tfour.jukebox".equals(getPackageName())) {
+            return;
+        }
+        try {
+            Class.forName("net.tfour.jukebox.JukeboxApp")
+                    .getDeclaredMethod("init", Application.class)
+                    .invoke(null, this);
+        } catch (Throwable e) {
+            android.util.Log.e("JukeboxLaunch", "jukebox init failed", e);
+        }
     }
 
     /**

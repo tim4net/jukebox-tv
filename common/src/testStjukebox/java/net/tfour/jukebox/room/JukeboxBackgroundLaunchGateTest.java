@@ -1,5 +1,6 @@
 package net.tfour.jukebox.room;
 
+import android.app.Activity;
 import android.app.Application;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -11,6 +12,7 @@ import com.liskovsoft.smartyoutubetv2.common.app.models.playback.JukeboxMode;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.PlaybackPresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.views.PlaybackView;
 import com.liskovsoft.smartyoutubetv2.common.app.views.ViewManager;
+import com.liskovsoft.smartyoutubetv2.common.utils.JukeboxLaunch;
 
 import org.junit.After;
 import org.junit.Before;
@@ -20,6 +22,7 @@ import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
+import org.robolectric.shadows.ShadowLog;
 
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
@@ -30,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
@@ -61,6 +65,8 @@ public class JukeboxBackgroundLaunchGateTest {
         JukeboxMode.setRoomActive(false);
         JukeboxMode.setSongSet(false);
         JukeboxForeground.setTestOverride(null); // Robolectric defaults to foreground
+        JukeboxLaunch.resetForTests(); // ViewManager gate inert unless a test opts in
+        ShadowLog.clear();
         resetSingleton(PlaybackPresenter.class, "sInstance");
         resetSingleton(ViewManager.class, "sInstance");
 
@@ -111,6 +117,7 @@ public class JukeboxBackgroundLaunchGateTest {
         JukeboxMode.setRoomActive(false);
         JukeboxMode.setSongSet(false);
         JukeboxForeground.setTestOverride(null);
+        JukeboxLaunch.resetForTests();
         new Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null);
         if (room != null) {
             room.stop();
@@ -207,5 +214,60 @@ public class JukeboxBackgroundLaunchGateTest {
         JukeboxForeground.setTestOverride(true);
         controller.onStateChanged("Hey");
         assertEquals(V1, presenter.getVideo().videoId);
+    }
+
+    private static boolean logged(String tag, String fragment) {
+        for (ShadowLog.LogItem item : ShadowLog.getLogs()) {
+            if (tag.equals(item.tag) && item.msg != null && item.msg.contains(fragment)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Test
+    public void viewManagerBlocksInternalLaunchesWhileBackgrounded() {
+        // The 2465 gazebo finding (steps 3/5): a skip while Jukebox was
+        // backgrounded cold-started SplashActivity in a new task and brought
+        // PlaybackActivity to the front ~5-7s later. Every internal launch
+        // funnels through ViewManager.startView, which must be a no-op (logged
+        // under JukeboxLaunch) while another app is in use.
+        JukeboxLaunch.init(true, JukeboxForeground::isAppInForeground);
+        ViewManager viewManager = ViewManager.instance(app());
+        viewManager.register(PlaybackView.class, Activity.class);
+        viewManager.setRoot(Activity.class);
+
+        JukeboxForeground.setTestOverride(false); // e.g. Fire TV Settings on top
+        viewManager.startView(PlaybackView.class);
+        viewManager.startDefaultView();
+        assertNull("no activity may be started while backgrounded",
+                Shadows.shadowOf(app()).getNextStartedActivity());
+        assertTrue("the blocked launch must be verifiable",
+                logged("JukeboxLaunch", "blocked Activity"));
+
+        JukeboxForeground.setTestOverride(true); // the user is back in the app
+        viewManager.startView(PlaybackView.class);
+        assertNotNull("foreground launches proceed as before",
+                Shadows.shadowOf(app()).getNextStartedActivity());
+        assertTrue(logged("JukeboxLaunch", "start Activity (ViewManager.startView)"));
+    }
+
+    @Test
+    public void resumeHookLogsTheDeferralAndOpensOnReturn() throws Exception {
+        // The 2465 gazebo finding (step 2): the join screen's resume check ran
+        // while the process still looked backgrounded, deferred silently and
+        // nothing ever retried. The hook must log WHY it defers (verifiable),
+        // and a later call once the user is back must open the exact room song.
+        setPresenterVideo(null);
+        JukeboxForeground.setTestOverride(false);
+
+        controller.resumeRoomSongIfNeeded("join:onResume:tick1");
+        assertNull("no open while backgrounded", presenter.getVideo());
+        assertTrue("the deferral must be logged with its reason",
+                logged("JukeboxPopup", "resume deferred: app backgrounded"));
+
+        JukeboxForeground.setTestOverride(true); // retry tick after the user returned
+        controller.resumeRoomSongIfNeeded("join:onResume:tick2");
+        assertEquals("the exact room song must open on return", V1, presenter.getVideo().videoId);
     }
 }

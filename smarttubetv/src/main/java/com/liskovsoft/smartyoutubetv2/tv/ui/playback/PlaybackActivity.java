@@ -2,6 +2,7 @@ package com.liskovsoft.smartyoutubetv2.tv.ui.playback;
 
 import android.annotation.TargetApi;
 import android.app.PictureInPictureParams;
+import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.InputDevice;
@@ -18,6 +19,7 @@ import com.liskovsoft.smartyoutubetv2.common.app.views.PlaybackView;
 import com.liskovsoft.smartyoutubetv2.common.prefs.GeneralData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.MainUIData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
+import com.liskovsoft.smartyoutubetv2.common.utils.JukeboxLaunch;
 import com.liskovsoft.smartyoutubetv2.common.utils.Utils;
 import com.liskovsoft.smartyoutubetv2.tv.R;
 import com.liskovsoft.smartyoutubetv2.tv.ui.common.LeanbackActivity;
@@ -39,12 +41,24 @@ public class PlaybackActivity extends LeanbackActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        // Jukebox (no-op elsewhere): log action/data/flags/referrer so external
+        // launches (adb am start, deep links) can be told apart from internal ones.
+        JukeboxLaunch.noteIntent(this, "PlaybackActivity.onCreate", getIntent());
+
         setContentView(R.layout.fragment_playback);
         Fragment fragment =
                 getSupportFragmentManager().findFragmentByTag(getString(R.string.playback_tag));
         if (fragment instanceof PlaybackFragment) {
             mPlaybackFragment = (PlaybackFragment) fragment;
         }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+
+        JukeboxLaunch.noteIntent(this, "PlaybackActivity.onNewIntent", intent);
     }
 
     @Override

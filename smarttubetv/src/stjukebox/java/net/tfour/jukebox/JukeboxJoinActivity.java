@@ -6,12 +6,15 @@ import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.TextView;
 
+import com.liskovsoft.smartyoutubetv2.common.app.presenters.PlaybackPresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.views.ViewManager;
+import com.liskovsoft.smartyoutubetv2.common.utils.JukeboxLaunch;
 import com.liskovsoft.smartyoutubetv2.tv.R;
 import com.liskovsoft.smartyoutubetv2.tv.ui.browse.BrowseActivity;
 import com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity;
@@ -20,6 +23,8 @@ import com.liskovsoft.smartyoutubetv2.tv.ui.playback.PlaybackActivity;
 import net.tfour.jukebox.room.JukeboxLog;
 import net.tfour.jukebox.room.JukeboxQr;
 import net.tfour.jukebox.room.JukeboxRoom;
+import net.tfour.jukebox.room.JukeboxRoomController;
+import net.tfour.jukebox.update.JukeboxUpdate;
 
 /**
  * TV join screen (stjukebox flavor only, the launcher entry): big QR of the join URL,
@@ -32,6 +37,14 @@ import net.tfour.jukebox.room.JukeboxRoom;
  */
 public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listener {
     private static final int QR_SIZE_PX = 512;
+    /**
+     * Reopening the app with an active room song must land back in that song
+     * playing (build 2466): the resume check re-runs at these delays after the
+     * join screen resumes, so a single check that races the foreground
+     * transition (or a transiently missing player) can never leave the room
+     * silent like build 2465 did.
+     */
+    private static final long[] RESUME_RETRY_DELAYS_MS = {0, 1500, 3000, 5000, 8000, 12000};
 
     private ImageView mQrView;
     private TextView mCodeView;
@@ -40,6 +53,9 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     private String mBoundJoinUrl;
     /** onNewIntent() just re-entered the room; the onStart that follows skips its own. */
     private boolean mSkipNextStartReenter;
+    private final Handler mResumeRetryHandler = new Handler();
+    private int mResumeRetryIndex;
+    private String mResumeRetryVia;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -69,6 +85,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
             browseButton.setDefaultFocusHighlightEnabled(false);
         }
         browseButton.setOnClickListener(v -> {
+            JukeboxLaunch.noteLaunch("BrowseActivity", "join screen browse button");
             Intent browse = new Intent(this, BrowseActivity.class);
             browse.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(browse);
@@ -123,6 +140,8 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         }
         Intent forwarded = new Intent(intent);
         forwarded.setClassName(getPackageName(), SplashActivity.class.getName());
+        JukeboxLaunch.noteLaunch("SplashActivity", "join screen forwarded non-launcher intent");
+        JukeboxLaunch.noteIntent(this, "JukeboxJoinActivity.forward", intent);
         startActivity(forwarded);
         return true;
     }
@@ -154,6 +173,59 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         // room "play" would early-return in ViewManager.startView(PlaybackView)
         // and never bring the player back to the foreground.
         ViewManager.instance(this).removeTop(PlaybackActivity.class);
+        // The user is in the app on the join screen (idle): time for the
+        // throttled, logged self-update check (tag JukeboxUpdate).
+        JukeboxUpdate.maybeCheck(this);
+        // Reopening with an active room song must land back in that song playing:
+        // keep re-running the controller's resume check for a short while so a
+        // single mistimed check (the 2465 failure) can't leave the room silent.
+        startResumeRetry("onResume");
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // Another activity came in front (e.g. PlaybackActivity opened by a
+        // successful resume, or another app): stop the retry loop.
+        cancelResumeRetry();
+    }
+
+    private void startResumeRetry(String via) {
+        cancelResumeRetry();
+        mResumeRetryVia = via;
+        mResumeRetryIndex = 0;
+        postNextResumeRetry();
+    }
+
+    private void cancelResumeRetry() {
+        mResumeRetryHandler.removeCallbacksAndMessages(null);
+        mResumeRetryIndex = RESUME_RETRY_DELAYS_MS.length;
+    }
+
+    private void postNextResumeRetry() {
+        if (mResumeRetryIndex >= RESUME_RETRY_DELAYS_MS.length) {
+            return;
+        }
+        long delay = RESUME_RETRY_DELAYS_MS[mResumeRetryIndex++];
+        Runnable tick = () -> {
+            if (isFinishing() || isDestroyed()) {
+                return;
+            }
+            if (JukeboxRoom.isRoomActive()) {
+                JukeboxRoomController controller = PlaybackPresenter.instance(this)
+                        .getController(JukeboxRoomController.class);
+                if (controller != null) {
+                    controller.resumeRoomSongIfNeeded(
+                            "join:" + mResumeRetryVia + ":tick" + mResumeRetryIndex);
+                }
+            }
+            postNextResumeRetry();
+        };
+        if (delay == 0L) {
+            mResumeRetryHandler.post(tick);
+        } else {
+            mResumeRetryHandler.postDelayed(tick, delay);
+        }
     }
 
     @Override

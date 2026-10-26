@@ -27,6 +27,7 @@ import com.liskovsoft.smartyoutubetv2.common.app.presenters.SplashPresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.base.BasePresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.dialogs.AppUpdatePresenter;
 import com.liskovsoft.smartyoutubetv2.common.misc.MotherActivity;
+import com.liskovsoft.smartyoutubetv2.common.utils.JukeboxLaunch;
 import com.liskovsoft.smartyoutubetv2.common.utils.Utils;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
 
@@ -120,10 +121,14 @@ public class ViewManager {
         //    return;
         //}
 
-        Class<?> activityClass = mViewMapping.get(viewClass);
+        Class<? extends Activity> activityClass = mViewMapping.get(viewClass);
 
         if (activityClass != null) {
-            startActivity(activityClass);
+            // Jukebox gate (no-op in other flavors): never start an activity while
+            // the app is backgrounded (another app in use) — logged under JukeboxLaunch.
+            if (JukeboxLaunch.checkLaunch(activityClass.getSimpleName(), "ViewManager.startView")) {
+                startActivity(activityClass);
+            }
         } else {
             Log.e(TAG, "Activity not registered for view " + viewClass.getSimpleName());
         }
@@ -150,9 +155,13 @@ public class ViewManager {
             } else {
                 try {
                     Log.d(TAG, "Launching parent activity: " + parentActivity.getSimpleName());
-                    Intent intent = new Intent(activity, parentActivity);
+                    // Jukebox gate (no-op in other flavors): user-driven (BACK), but
+                    // still funneled through the same logged gate for uniformity.
+                    if (JukeboxLaunch.checkLaunch(parentActivity.getSimpleName(), "ViewManager.startParentView")) {
+                        Intent intent = new Intent(activity, parentActivity);
 
-                    safeStartActivity(activity, intent);
+                        safeStartActivity(activity, intent);
+                    }
                 } catch (ActivityNotFoundException e) {
                     e.printStackTrace();
                     Log.e(TAG, "Parent activity not found.");
@@ -182,7 +191,11 @@ public class ViewManager {
 
         Log.d(TAG, "Launching default activity: " + lastActivity.getSimpleName());
 
-        startActivity(lastActivity);
+        // Jukebox gate (no-op in other flavors): a default-view launch while
+        // backgrounded would cold-start the app over whatever the user watches.
+        if (JukeboxLaunch.checkLaunch(lastActivity.getSimpleName(), "ViewManager.startDefaultView")) {
+            startActivity(lastActivity);
+        }
     }
 
     private void startActivity(Class<?> activityClass) {
