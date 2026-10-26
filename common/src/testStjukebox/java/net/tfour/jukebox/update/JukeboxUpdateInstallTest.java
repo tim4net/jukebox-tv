@@ -187,6 +187,11 @@ public class JukeboxUpdateInstallTest {
     public void setUp() {
         app = RuntimeEnvironment.getApplication();
         net.tfour.jukebox.room.JukeboxForeground.setTestOverride(true);
+        // Nina's 2473 gazebo item (c): Robolectric defaults
+        // canRequestPackageInstalls to false; every pre-existing
+        // install-success test needs it granted (the (c) tests override
+        // it back to false explicitly).
+        shadowPm().setCanRequestPackageInstalls(true);
         ShadowLog.clear();
         controller = Robolectric.buildActivity(Activity.class).setup();
         activity = controller.get();

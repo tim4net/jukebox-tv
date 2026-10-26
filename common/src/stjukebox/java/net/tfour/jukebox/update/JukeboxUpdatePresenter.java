@@ -10,6 +10,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 
 import androidx.core.content.FileProvider;
 
@@ -86,6 +87,12 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
      */
     static final String PINNED_SIGNING_CERT_SHA256 =
             "0DC9138549DDEDF665BC48F1F717B5CF35893943699746ED93657525FDE7C609";
+    /**
+     * Nina's 2473 gazebo item (c): the card text while installs from unknown
+     * apps are blocked (Fire OS) — the user must allow them and come back.
+     */
+    static final String ALLOW_INSTALLS_CARD_TEXT =
+            "Allow Jukebox to install updates, then come back";
     /** Log/download progress step sizes. */
     private static final long PROGRESS_BYTES_STEP = 2 * 1024 * 1024; // ~2MB
     private static final int PROGRESS_PERCENT_STEP = 10; // ~10%
@@ -161,6 +168,16 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         // Build 2475, item 4: stale downloads never outlive a foreground pass.
         pruneStaleDownloads(pending != null ? new File(pending) : null);
         if (pending == null || !JukeboxForeground.isAppInForeground()) {
+            return;
+        }
+        // Nina's 2473 gazebo item (c): still not allowed to install from
+        // unknown apps — keep the verified apk pending and re-offer, but
+        // never loop reopening the settings screen.
+        if (!canRequestPackageInstalls()) {
+            JukeboxLog.i(JukeboxUpdate.LOG_TAG, "foreground: installs are still"
+                    + " not allowed (unknown apps) \u2014 keeping the pending"
+                    + " install " + pending + ", re-offering");
+            runOnMain(() -> cardText(ALLOW_INSTALLS_CARD_TEXT));
             return;
         }
         JukeboxLog.i(JukeboxUpdate.LOG_TAG,
@@ -504,6 +521,20 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
                     "install deferred: app is backgrounded (keeping " + path + ")");
             return;
         }
+        if (!canRequestPackageInstalls()) {
+            // Nina's 2473 gazebo item (c) / Fire OS: installs from unknown
+            // apps are blocked. Never launch the installer: keep the
+            // verified file pending, tell the user, and take them to the
+            // unknown-apps settings for our package (the next foreground
+            // resumes the install once allowed).
+            setPendingInstall(path, offer);
+            JukeboxLog.i(JukeboxUpdate.LOG_TAG, "install blocked: installs"
+                    + " from unknown apps are not allowed \u2014 keeping "
+                    + path + " pending, opening the unknown-apps settings");
+            runOnMain(() -> cardText(ALLOW_INSTALLS_CARD_TEXT));
+            openUnknownAppSourcesSettings();
+            return;
+        }
         if (!freshDownload && !claimPendingLaunch(path)) {
             // Review fix #2 (build 2473): the install press and the foreground
             // hook can race on the same pending file — the loser must not
@@ -777,6 +808,17 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
     }
 
     /**
+     * Nina's 2473 gazebo item (c): true when this app may install packages
+     * (API&lt;26 always — the unknown-apps setting does not exist there),
+     * false when the user must first allow installs from unknown apps
+     * (Fire OS blocks the installer otherwise).
+     */
+    protected boolean canRequestPackageInstalls() {
+        return Build.VERSION.SDK_INT < 26
+                || mAppContext.getPackageManager().canRequestPackageInstalls();
+    }
+
+    /**
      * Streams the url into {@code destFile}.part and renames to
      * {@code destFile} on success. Logs progress every ~10% (known length) or
      * every ~2MB. Build 2475, item 7: redirects are never followed
@@ -855,6 +897,16 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             delete(part);
             throw new IOException("cannot rename " + part + " to " + destFile);
         }
+    }
+
+    /** Opens the system unknown-apps settings for OUR package (item (c)). */
+    private void openUnknownAppSourcesSettings() {
+        Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:" + mAppContext.getPackageName()));
+        settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        JukeboxLog.i(JukeboxUpdate.LOG_TAG, "opening the unknown-apps settings for "
+                + mAppContext.getPackageName() + " (NEW_TASK)");
+        mAppContext.startActivity(settings);
     }
 
     private void launchInstaller(String apkPath) {
