@@ -51,9 +51,12 @@ public class JukeboxRoomClientTest {
 
     static class FakeHttp implements JukeboxRoomClient.Http {
         final List<String> posts = new ArrayList<>();
-        String stateResponse; boolean stateFails; boolean stateTransient;
+        String stateResponse; boolean stateFails; boolean stateTransient; boolean createFails;
         int created;
-        public String postJson(String url, String body) {
+        public String postJson(String url, String body) throws IOException {
+            if (createFails) {
+                throw new IOException("offline");
+            }
             posts.add(url);
             created++;
             return "{\"room\":\"room" + created + "\",\"code\":\"CODE" + created + "\"}";
@@ -122,6 +125,43 @@ public class JukeboxRoomClientTest {
         assertEquals(2, t.urls.size());
         t.open();
         assertEquals("Connected", rec.status);
+    }
+
+    @Test
+    public void secondStartWhileHandshakeInFlightDoesNotCancelIt() {
+        c.start(); // socket connect initiated, handshake not yet complete
+        assertEquals(1, t.urls.size());
+        c.start(); // re-entry while the handshake is in flight: must be a no-op
+        assertEquals(1, t.urls.size()); // no cancel+reconnect of the in-flight attempt
+        t.open(); // the original handshake completes normally
+        assertEquals("Connected", rec.status);
+        assertEquals(1, t.urls.size());
+        assertTrue(c.isConnected());
+    }
+
+    @Test
+    public void startAfterFailedInitialSetupHealsInsteadOfWedging() {
+        http.createFails = true;
+        c.start(); // room creation fails: setup retry scheduled, no room yet
+        assertEquals(0, t.urls.size());
+        assertEquals(1, sch.tasks.size());
+        http.createFails = false;
+        c.start(); // re-entry must re-run the setup, not the no-op connectSocket()
+        assertEquals(1, t.urls.size()); // room created and socket connect started
+        assertEquals("wss://jukebox.example/api/r/room1/ws", t.urls.get(0));
+        assertTrue(sch.tasks.isEmpty()); // stale retry cancelled, nothing wedged
+        t.open();
+        assertEquals("Connected", rec.status);
+        assertEquals("room1", store.get("room"));
+    }
+
+    @Test
+    public void startAfterClosedSetupsNewRoomInsteadOfStaleConnect() {
+        c.start(); t.open();
+        t.msg("{\"t\":\"closed\",\"room\":\"room1\"}");
+        c.start(); // heal before the scheduled retry fires: must not connect room1
+        assertEquals(2, http.posts.size()); // a NEW room was created
+        assertEquals("wss://jukebox.example/api/r/room2/ws", t.urls.get(1));
     }
 
     @Test
@@ -320,5 +360,45 @@ public class JukeboxRoomClientTest {
         t.msg("{\"t\":\"state\",\"room\":\"room1\",\"nowPlaying\":{\"title\":\"Hey\"},\"queue\":[],\"listeners\":4}");
         assertEquals("Hey", rec.np);
         assertEquals(4, rec.listeners);
+    }
+
+    @Test
+    public void stateNowPlayingGivesLiveVideoIdAndFirstPlayStillOpens() {
+        c.start(); t.open();
+        // "state" with popups:true arrives BEFORE any "play": popups wiring must
+        // already see the live videoId instead of skipping with vid=null.
+        t.msg("{\"t\":\"state\",\"room\":\"room1\",\"popups\":true,\"nowPlaying\":{\"songId\":\"s1\",\"videoId\":\""
+                + V1 + "\",\"title\":\"Hey\"},\"queue\":[],\"listeners\":2}");
+        assertEquals(V1, c.getCurrentVideoId());
+        t.msg(play("s1", V1)); // the id came from the snapshot: the play still opens it
+        assertEquals(java.util.Arrays.asList(V1), rec.plays);
+        t.msg(play("s1", V1)); // now it was seen via "play": deduplicated
+        assertEquals(1, rec.plays.size());
+    }
+
+    @Test
+    public void stateNowPlayingDoesNotOverrideCurrentPlaySong() {
+        c.start(); t.open();
+        t.msg(play("s1", V1));
+        t.msg("{\"t\":\"state\",\"room\":\"room1\",\"nowPlaying\":{\"songId\":\"s2\",\"videoId\":\""
+                + V2 + "\",\"title\":\"x\"},\"queue\":[],\"listeners\":1}");
+        assertEquals(V1, c.getCurrentVideoId()); // "play" stays authoritative
+        t.msg(play("s2", V2));
+        assertEquals(V2, c.getCurrentVideoId());
+        assertEquals(java.util.Arrays.asList(V1, V2), rec.plays);
+    }
+
+    @Test
+    public void reconnectStateKeepsLiveVideoIdWhilePlayIsDeduplicated() {
+        c.start(); t.open();
+        t.msg(play("s1", V1));
+        t.drop();
+        sch.runAll(); // reconnect
+        t.open();
+        t.msg("{\"t\":\"state\",\"room\":\"room1\",\"popups\":true,\"nowPlaying\":{\"songId\":\"s1\",\"videoId\":\""
+                + V1 + "\",\"title\":\"Hey\"},\"queue\":[],\"listeners\":1}");
+        t.msg(play("s1", V1)); // re-delivered current song: deduplicated, not reopened
+        assertEquals(1, rec.plays.size());
+        assertEquals(V1, c.getCurrentVideoId()); // popups still see the live id
     }
 }

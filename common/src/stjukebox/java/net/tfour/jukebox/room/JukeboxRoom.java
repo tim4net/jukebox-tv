@@ -123,6 +123,8 @@ public final class JukeboxRoom {
     private HandlerThread mThread;
     private Handler mThreadHandler;
     private JukeboxRoomClient mClient;
+    /** True while a client.start() is posted but hasn't run yet (async executor). */
+    private volatile boolean mStartPending;
     private volatile boolean mActive;
     private volatile String mRoom;
     private volatile String mCode;
@@ -183,6 +185,8 @@ public final class JukeboxRoom {
      * Starts (or re-attaches to) the room. Idempotent and self-healing: keeps a live
      * client/connection, rebuilds the client (and its thread) when it is dead, and
      * reconnects a dead socket immediately (see {@link JukeboxRoomClient#start()}).
+     * A {@code client.start()} that is still queued on the room thread (e.g. onStart
+     * racing onCreate) is never posted twice and never mistaken for a dead client.
      * Listeners are re-notified with the current room state afterwards.
      */
     public synchronized void start() {
@@ -200,6 +204,8 @@ public final class JukeboxRoom {
             }
             mThreadHandler = null;
             mClient = null;
+            // Any pending start belonged to the old thread/client; they're gone.
+            mStartPending = false;
             mThread = new HandlerThread("JukeboxRoom");
             mThread.start();
             mThreadHandler = new Handler(mThread.getLooper());
@@ -214,8 +220,22 @@ public final class JukeboxRoom {
         // Flag tracks the current song, not the socket. A fresh room is idle until "play".
         syncSongFlag();
         final JukeboxRoomClient client = mClient;
-        // Room setup does blocking HTTP: keep it off the main thread.
-        mExecutor.post(client::start);
+        if (mStartPending) {
+            // A client.start() is still queued on the room thread (e.g. onStart raced
+            // onCreate): posting another could cancel its in-flight handshake or run
+            // a redundant room setup. The queued start does the healing.
+            JukeboxLog.i(LOG_TAG, "start: client start already pending, skipping duplicate start");
+        } else {
+            mStartPending = true;
+            // Room setup does blocking HTTP: keep it off the main thread.
+            mExecutor.post(() -> {
+                try {
+                    client.start();
+                } finally {
+                    mStartPending = false;
+                }
+            });
+        }
         // Rebind listeners/UI to the current room state (join screen, badge, overlay).
         mMainHandler.post(this::notifyRebind);
     }
@@ -227,6 +247,12 @@ public final class JukeboxRoom {
         }
         if (mClient == null) {
             return "no client";
+        }
+        if (mStartPending) {
+            // start() was posted but hasn't run yet: don't mistake the not-yet-running
+            // client for a dead one and rebuild (which would cancel the pending
+            // start's handshake or create a duplicate room).
+            return null;
         }
         if (!mClient.isRunning()) {
             return "client stopped";

@@ -129,6 +129,31 @@ public class VideoLoaderJukeboxGateTest {
     }
 
     @Test
+    public void loadPreviousAndSuggestionClickAreNoOpsWhileRoomActive() {
+        JukeboxMode.setRoomActive(true);
+        JukeboxMode.setSongSet(false); // idle room: previous/suggestion are still blocked
+
+        VideoLoaderController vlc = loader();
+        vlc.loadPrevious();
+        vlc.onSuggestionItemClicked(Video.from("9bZkp7q19f0"));
+
+        assertTrue("no player interaction while the room is active: " + playerCalls,
+                playerCalls.isEmpty());
+    }
+
+    @Test
+    public void loadPreviousAndSuggestionClickAreNoOpsWhileSongSet() {
+        JukeboxMode.setRoomActive(false);
+        JukeboxMode.setSongSet(true);
+
+        VideoLoaderController vlc = loader();
+        vlc.loadPrevious();
+        vlc.onSuggestionItemClicked(Video.from("9bZkp7q19f0"));
+
+        assertTrue(playerCalls.isEmpty());
+    }
+
+    @Test
     public void loadNextRunsItsNormalPathWhenNoRoomIsActive() {
         // Negative control proving the tests above are stopped by the jukebox gate:
         // without it, loadNext() proceeds into the (uninitialized) suggestions

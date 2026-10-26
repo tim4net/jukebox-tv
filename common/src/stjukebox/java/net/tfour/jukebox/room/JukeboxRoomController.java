@@ -35,6 +35,8 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     /** Room videoId the reopen counter applies to. */
     private String mReopenVideoId;
     private int mReopenAttempts;
+    /** Room videoId whose "ended" was already reported; never auto-reopened. */
+    private String mEndedVideoId;
 
     private final Runnable mHeartbeat = new Runnable() {
         @Override
@@ -77,6 +79,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         ensureListening();
         ensureJoinBadge();
         updatePopupOverlay();
+        maybeResumeRoomSong();
     }
 
     @Override
@@ -102,33 +105,22 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             resetReopen();
         } else if (roomVideoId.equals(loadedId)) {
             resetReopen();
+            mEndedVideoId = null; // the room video is (again) the loaded one
         } else if (beginReopen(roomVideoId)) {
             // Mismatch, and this room video is not the one we're already opening.
             // The player substituted/kept a non-room video: re-open the exact room id.
-            JukeboxLog.i(LOG_TAG, "non-room video loaded: player=" + loadedId
-                    + " roomVid=" + roomVideoId + " song=" + room.getRoom()
-                    + ": reopening exact room videoId (attempt " + mReopenAttempts + ")");
-            stopHeartbeat();
-            mLoadedVideoId = null;
-            mSuppressReports = true;
-            try {
-                if (player != null) {
-                    player.setPlayWhenReady(false);
-                }
-                getPlaybackPresenter().openVideo(roomVideoId);
-            } finally {
-                mSuppressReports = false;
-                // Drop the in-flight id so a later mismatch can use a remaining
-                // attempt. A re-entrant onVideoLoaded still sees mRequestedVideoId.
-                if (roomVideoId.equals(mRequestedVideoId)) {
-                    mRequestedVideoId = null;
-                }
-            }
+            openRoomVideo(roomVideoId, "non-room video loaded: player=" + loadedId
+                    + " roomVid=" + roomVideoId + " song=" + room.getRoom());
             return;
         } else {
-            // Already requested this room video, or the 2-attempt cap is hit.
+            // Already requested this room video, or the 2-attempt cap is hit. Never
+            // let the non-room video keep playing: pause it and keep enforcing the
+            // room id (nothing is reported for a non-room video).
             JukeboxLog.i(LOG_TAG, "non-room video loaded: player=" + loadedId + " roomVid=" + roomVideoId
-                    + ": reopen cap reached, not reporting and not auto-advancing");
+                    + ": reopen attempts exhausted, pausing non-room playback");
+            if (player != null) {
+                player.setPlayWhenReady(false);
+            }
             stopHeartbeat();
             mLoadedVideoId = null;
             return;
@@ -177,6 +169,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         // Only tell the room. It sends "ended"; the following "play" opens the next song.
         Video video = getPlayer() != null && getPlayer().getVideo() != null ? getPlayer().getVideo() : getVideo();
         if (video != null && video.videoId != null && getContext() != null) {
+            mEndedVideoId = video.videoId;
             JukeboxRoom.instance(getContext()).songEnded(video.videoId);
         }
         mLoadedVideoId = null;
@@ -194,6 +187,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     public void onRoomUpdated() {
         ensureJoinBadge();
         updatePopupOverlay();
+        maybeResumeRoomSong();
     }
 
     @Override
@@ -201,12 +195,14 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         // Badge shows code, QR and host, not connection status. The overlay check is
         // cheap: song/settings may have been cleared on the closed/stopped/idle paths.
         updatePopupOverlay();
+        maybeResumeRoomSong();
     }
 
     @Override
     public void onStateChanged(String nowPlaying) {
         // Badge does not show the now-playing title.
         updatePopupOverlay();
+        maybeResumeRoomSong();
     }
 
     @Override
@@ -274,6 +270,63 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         mRequestedVideoId = null;
         mReopenVideoId = null;
         mReopenAttempts = 0;
+    }
+
+    /** Pauses whatever is loaded and (re)opens the exact room videoId (bounded by {@link #beginReopen}). */
+    private void openRoomVideo(String roomVideoId, String reason) {
+        JukeboxLog.i(LOG_TAG, reason + ": opening exact room videoId " + roomVideoId
+                + " (attempt " + mReopenAttempts + ")");
+        stopHeartbeat();
+        mLoadedVideoId = null;
+        mSuppressReports = true;
+        try {
+            PlaybackView player = getPlayer();
+            if (player != null) {
+                player.setPlayWhenReady(false);
+            }
+            getPlaybackPresenter().openVideo(roomVideoId);
+        } finally {
+            mSuppressReports = false;
+            // Drop the in-flight id so a later mismatch can use a remaining
+            // attempt. A re-entrant onVideoLoaded still sees mRequestedVideoId.
+            if (roomVideoId.equals(mRequestedVideoId)) {
+                mRequestedVideoId = null;
+            }
+        }
+    }
+
+    /**
+     * Re-opens the room's current song when the player sits idle while a song is
+     * active — e.g. the engine was released by re-entering the join screen
+     * mid-song, or the process re-attached via a "state" snapshot. Without this the
+     * client keeps the (deduplicated) song id, nothing plays, heartbeats stop and
+     * "ended" is never sent: the room queue stalls until a phone skips the song.
+     * Bounded by the same {@link #beginReopen} cap as mismatch reopens, and never
+     * reopens a video whose "ended" was already reported.
+     */
+    private void maybeResumeRoomSong() {
+        if (!JukeboxRoom.isRoomActive() || mSuppressReports || mLoadedVideoId != null) {
+            return;
+        }
+        Context ctx = getContext();
+        PlaybackView player = getPlayer();
+        if (ctx == null || player == null) {
+            return;
+        }
+        JukeboxRoom room = JukeboxRoom.instance(ctx);
+        String roomVideoId = room.getCurrentVideoId();
+        if (roomVideoId == null || roomVideoId.equals(mEndedVideoId)) {
+            return; // idle room, or the song already ended and was reported
+        }
+        Video current = player.getVideo() != null ? player.getVideo() : getVideo();
+        String loadedId = current != null ? current.videoId : null;
+        if (roomVideoId.equals(loadedId)) {
+            return; // the engine (re)load of the room video is already on its way
+        }
+        if (!beginReopen(roomVideoId)) {
+            return; // already opening it, or the reopen cap for this song is exhausted
+        }
+        openRoomVideo(roomVideoId, "room song active but player idle");
     }
 
     /** Video id actually loaded in the player, not a previously queued id. */

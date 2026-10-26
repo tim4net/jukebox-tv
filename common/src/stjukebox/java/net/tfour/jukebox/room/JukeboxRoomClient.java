@@ -108,15 +108,22 @@ public class JukeboxRoomClient {
         @Override
         public void run() {
             synchronized (JukeboxRoomClient.this) {
-                if (mRunning) {
-                    setupRoom();
+                if (!mRunning || mSetupInProgress) {
+                    return;
                 }
             }
+            // setupRoom() does blocking HTTP: run it without holding the lock.
+            setupRoom();
         }
     };
 
-    private boolean mRunning;
-    private boolean mConnected;
+    // mRunning/mConnected/mCurrentVideoId are volatile and read without the lock so
+    // main-thread getters never block on the setup HTTP done under the lock below.
+    private volatile boolean mRunning;
+    private volatile boolean mConnected;
+    private volatile String mCurrentVideoId;
+    private boolean mConnecting;
+    private boolean mSetupInProgress;
     private boolean mSocketDone;
     private int mGeneration;
     private long mBackoffMs = INITIAL_BACKOFF_MS;
@@ -124,7 +131,8 @@ public class JukeboxRoomClient {
     private String mCode;
     private String mLastStatus;
     private String mCurrentSongId;
-    private String mCurrentVideoId;
+    /** True while the current song id came from a "state" snapshot, not a "play". */
+    private boolean mSongFromState;
     /** Song ids for which "ended" was already accepted by the socket. */
     private final Set<String> mEndedSentSongIds = new LinkedHashSet<>();
     private String mPendingEndSongId;
@@ -145,32 +153,61 @@ public class JukeboxRoomClient {
      * Idempotent and self-healing. Reuses the saved room when its state check
      * succeeds, otherwise creates (and saves) a new room, then connects the
      * WebSocket. When called again while already running, a live connection is kept
-     * as is; a dead socket is reconnected immediately (no backoff wait) so that
-     * re-entering the join screen heals a stalled client. Network calls run on the
-     * caller's thread; do not call this on the Android main thread.
+     * as is; an in-flight room setup or WebSocket handshake is never interrupted; a
+     * dead socket (room known) is reconnected immediately (no backoff wait); a
+     * missing room (initial setup failed or the room was closed) is set up again
+     * right away so the client can never end up wedged with nothing scheduled.
+     * Network calls run on the caller's thread; do not call this on the Android
+     * main thread.
      */
-    public synchronized void start() {
-        if (mRunning) {
-            if (mConnected) {
-                JukeboxLog.i(LOG_TAG, "start: reusing live connection room=" + mRoom);
-            } else {
-                JukeboxLog.i(LOG_TAG, "start: socket not live, reconnecting now room=" + mRoom);
+    public void start() {
+        boolean setupNow = false;
+        synchronized (this) {
+            if (mRunning) {
+                if (mConnected) {
+                    JukeboxLog.i(LOG_TAG, "start: reusing live connection room=" + mRoom);
+                    if (mRoom != null) {
+                        notifyRoomReadyLocked();
+                    }
+                    notifyStatusLocked("Connected");
+                    return;
+                }
+                if (mSetupInProgress) {
+                    // Room setup (blocking HTTP) is already running; let it finish.
+                    JukeboxLog.i(LOG_TAG, "start: room setup already in progress, waiting");
+                    return;
+                }
+                if (mConnecting) {
+                    // A WebSocket handshake is in flight; don't cancel and restart it.
+                    JukeboxLog.i(LOG_TAG, "start: websocket handshake in flight, waiting room=" + mRoom);
+                    return;
+                }
                 mBackoffMs = INITIAL_BACKOFF_MS;
                 mScheduler.cancelAll();
-                connectSocket();
-                return;
+                if (mRoom == null) {
+                    // Initial setup failed (retry pending or nothing scheduled) or the
+                    // room was closed: connectSocket() would be a no-op, so run the
+                    // room setup again instead of wedging the client.
+                    JukeboxLog.i(LOG_TAG, "start: no room, (re)running setup now");
+                    setupNow = true;
+                } else {
+                    JukeboxLog.i(LOG_TAG, "start: socket not live, reconnecting now room=" + mRoom);
+                    connectSocket();
+                    return;
+                }
+            } else {
+                mRunning = true;
+                mBackoffMs = INITIAL_BACKOFF_MS;
+                mLastStatus = "Connecting…";
+                mScheduler.cancelAll();
+                setupNow = true;
             }
-            if (mRoom != null) {
-                notifyRoomReadyLocked();
-            }
-            notifyStatusLocked(mConnected ? "Connected" : mLastStatus);
-            return;
         }
-        mRunning = true;
-        mBackoffMs = INITIAL_BACKOFF_MS;
-        mLastStatus = "Connecting…";
-        mScheduler.cancelAll();
-        setupRoom();
+        // setupRoom() does blocking HTTP: never hold the lock across it, or
+        // main-thread getters would block on network timeouts.
+        if (setupNow) {
+            setupRoom();
+        }
     }
 
     /** Closes everything; no reconnects are scheduled afterwards. */
@@ -179,6 +216,7 @@ public class JukeboxRoomClient {
         mGeneration++;
         mSocketDone = true;
         mConnected = false;
+        mConnecting = false;
         mScheduler.cancelAll();
         mTransport.close();
         clearSongLocked();
@@ -231,33 +269,42 @@ public class JukeboxRoomClient {
                 mToken, mCurrentSongId, mCurrentVideoId, durationSec, positionSec));
     }
 
-    public synchronized boolean isConnected() {
+    // Lock-free volatile reads: these are called from the Android main thread while
+    // the room thread may be setting up the room (blocking HTTP) or connecting.
+    public boolean isConnected() {
         return mConnected;
     }
 
     /** True between {@link #start()} and {@link #stop()} (the socket may still be down). */
-    public synchronized boolean isRunning() {
+    public boolean isRunning() {
         return mRunning;
     }
 
     /** Video id of the song the room currently wants playing, or null. */
-    public synchronized String getCurrentVideoId() {
+    public String getCurrentVideoId() {
         return mCurrentVideoId;
     }
 
-    // Internal machinery. Everything below expects the instance lock to be held.
+    // Internal machinery. The *Locked helpers below expect the instance lock to be
+    // held; setupRoom() must run WITHOUT the lock (it does blocking HTTP).
 
     private void setupRoom() {
-        if (!mRunning) {
-            return;
+        String room;
+        String code;
+        synchronized (this) {
+            if (!mRunning || mSetupInProgress) {
+                return;
+            }
+            mSetupInProgress = true;
+            room = mStore.get(KEY_ROOM);
+            code = mStore.get(KEY_CODE);
         }
-        String room = mStore.get(KEY_ROOM);
-        String code = mStore.get(KEY_CODE);
         if (room != null && room.trim().isEmpty()) {
             room = null;
         }
         if (room != null) {
             try {
+                // Blocking HTTP: no lock held, so main-thread getters never block.
                 String state = mHttp.get(mOrigin + "/api/r/" + room + "/state");
                 if (JukeboxProtocol.isClosedState(state)) {
                     room = null;
@@ -273,6 +320,7 @@ public class JukeboxRoomClient {
         }
         if (room == null) {
             try {
+                // Blocking HTTP: no lock held, so main-thread getters never block.
                 String created = mHttp.postJson(mOrigin + "/api/rooms", "{}");
                 String[] roomAndCode = JukeboxProtocol.parseRoomCreated(created);
                 if (roomAndCode == null) {
@@ -283,23 +331,36 @@ public class JukeboxRoomClient {
                 mStore.put(KEY_ROOM, room);
                 mStore.put(KEY_CODE, code);
             } catch (IOException | RuntimeException e) {
-                scheduleRetryLocked(mSetupRetryRunnable);
+                synchronized (this) {
+                    mSetupInProgress = false;
+                    scheduleRetryLocked(mSetupRetryRunnable);
+                }
                 return;
             }
         }
-        mRoom = room;
-        mCode = code;
-        notifyRoomReadyLocked();
-        connectSocket();
+        synchronized (this) {
+            mSetupInProgress = false;
+            if (!mRunning) {
+                return; // stop() raced the setup: discard its result
+            }
+            mRoom = room;
+            mCode = code;
+            notifyRoomReadyLocked();
+            connectSocket();
+        }
     }
 
     private void connectSocket() {
         if (!mRunning || mRoom == null) {
             return;
         }
+        if (mConnected || mConnecting) {
+            return; // the socket is already live or a handshake is already in flight
+        }
         final int generation = ++mGeneration;
         mSocketDone = false;
         mConnected = false;
+        mConnecting = true;
         notifyStatusLocked("Connecting…");
         String url = webSocketUrlLocked();
         JukeboxLog.i(LOG_TAG, "ws connect url=" + url + " room=" + mRoom);
@@ -335,6 +396,7 @@ public class JukeboxRoomClient {
     }
 
     private void socketOpenedLocked() {
+        mConnecting = false;
         mConnected = true;
         mBackoffMs = INITIAL_BACKOFF_MS;
         notifyStatusLocked("Connected");
@@ -353,6 +415,7 @@ public class JukeboxRoomClient {
             }
             mSocketDone = true;
             mConnected = false;
+            mConnecting = false;
             scheduleRetryLocked(mReconnectRunnable);
         }
     }
@@ -378,6 +441,8 @@ public class JukeboxRoomClient {
             logStateMessage(text, message);
             if (message.isNowPlayingNull()) {
                 clearSongLocked();
+            } else {
+                adoptStateSongLocked(message);
             }
             mListener.onState(message.getNowPlayingTitle(), message.getListeners());
             mListener.onPopups(message.isPopupsEnabled());
@@ -449,27 +514,60 @@ public class JukeboxRoomClient {
             // Otherwise the server already advanced on its own; drop the pending end.
         }
         if (songId.equals(mCurrentSongId)) {
-            return; // deduplicate: never re-open the song that is already current
+            if (mSongFromState) {
+                // The id was adopted from a "state" snapshot, not from a "play":
+                // let this play through so the TV actually opens the song.
+                mSongFromState = false;
+            } else {
+                return; // deduplicate: never re-open the song that is already current
+            }
         }
         mCurrentSongId = songId;
         mCurrentVideoId = message.getVideoId();
         mListener.onPlay(songId, message.getVideoId(), message.getTitle());
     }
 
+    /**
+     * A "state" snapshot can arrive before "play" (or the "play" can be deduplicated
+     * on reconnect): while no song is current, record nowPlaying's videoId/songId so
+     * popups/overlay wiring sees the live videoId right away. A "play" message stays
+     * the only instruction to open a video: while a play-sourced song is current the
+     * snapshot is ignored (play is authoritative), and the first play for a
+     * state-sourced song still opens the video.
+     */
+    private void adoptStateSongLocked(JukeboxProtocol.Message message) {
+        if (mCurrentSongId != null) {
+            return; // "play" is authoritative while a song is current
+        }
+        String videoId = message.getNowPlayingVideoId();
+        if (JukeboxProtocol.isValidVideoId(videoId)) {
+            mCurrentVideoId = videoId;
+        }
+        String songId = message.getNowPlayingSongId();
+        if (songId != null && !songId.trim().isEmpty()) {
+            mCurrentSongId = songId;
+            mSongFromState = true;
+        }
+    }
+
     private void handleClosedLocked() {
         mGeneration++; // ignore any further callbacks of the dying socket
         mSocketDone = true;
         mConnected = false;
+        mConnecting = false;
         mScheduler.cancelAll();
         mTransport.close();
         mStore.put(KEY_ROOM, null);
         mStore.put(KEY_CODE, null);
+        // Forget the in-memory ids too: start()/retry must set up a NEW room,
+        // not reconnect the stale closed one (connectSocket() with a dead mRoom).
+        mRoom = null;
+        mCode = null;
         clearSongLocked();
         mPendingEndSongId = null;
         mAwaitPlayAfterReconnect = false;
         if (mRunning) {
             notifyStatusLocked("Reconnecting…");
-            mScheduler.cancelAll();
             // We are on the WebSocket thread holding the lock; setupRoom() does blocking
             // HTTP, so hop to the scheduler thread instead of running it inline.
             mScheduler.schedule(mSetupRetryRunnable, 0);
@@ -479,6 +577,7 @@ public class JukeboxRoomClient {
     private void clearSongLocked() {
         mCurrentSongId = null;
         mCurrentVideoId = null;
+        mSongFromState = false;
     }
 
     private boolean isCurrentSongLocked(String videoId) {

@@ -34,8 +34,14 @@ if (keystorePropertiesFile.exists()) {
 }
 
 // The first letter of the flavor name must be in uppercase
-if (new File("${projectDir}/google-services.json").exists() && (getGradle().getStartParameter().getTaskRequests().toString().contains("Stbeta") ||
-        getGradle().getStartParameter().getTaskRequests().toString().contains("Ststable"))) {
+def gradleTaskRequests = getGradle().getStartParameter().getTaskRequests().toString()
+// Skip the plugins for the stjukebox flavor: its application id (net.tfour.jukebox)
+// has no client in google-services.json (Jukebox ships without Firebase). This also
+// covers combined invocations (e.g. stjukebox unit tests + an ststable compile in
+// one run): the plugin would otherwise create process*Stjukebox*GoogleServices
+// tasks that fail on the missing client. Pure Stbeta/Ststable runs are unaffected.
+if (new File("${projectDir}/google-services.json").exists() && !gradleTaskRequests.contains("Stjukebox") &&
+        (gradleTaskRequests.contains("Stbeta") || gradleTaskRequests.contains("Ststable"))) {
     // Google Services Gradle plugin (transforms google-services.json file)
     apply plugin: 'com.google.gms.google-services'
 

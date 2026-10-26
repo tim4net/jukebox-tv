@@ -275,6 +275,15 @@ public class ViewManager {
         mActivityStack.remove(activity.getClass());
     }
 
+    /**
+     * Removes the given activity class from the view registry (e.g. a backgrounded
+     * player that is no longer the foreground view). The activity re-registers
+     * itself via {@link #addTop(Activity)} when it resumes.
+     */
+    public void removeTop(Class<? extends Activity> activityClass) {
+        mActivityStack.remove(activityClass);
+    }
+
     private boolean checkMoveViewsToBack(Activity activity) {
         if (mIsMoveToBackEnabled) {
             safeMoveTaskToBack(activity);

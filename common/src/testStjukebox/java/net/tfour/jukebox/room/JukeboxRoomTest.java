@@ -121,4 +121,45 @@ public class JukeboxRoomTest {
         room.start(); // re-entry must not clear the current song
         assertEquals("dQw4w9WgXcQ", room.getCurrentVideoId());
     }
+
+    @Test
+    public void backToBackStartWithAsyncExecutorReusesClientAndSingleStart() {
+        // Async executor: posted work runs only when flushed, like the real
+        // HandlerThread (onCreate/onStart race their client::start posts).
+        final List<Runnable> queued = new ArrayList<>();
+        final int[] built = {0};
+        JukeboxRoom asyncRoom = new JukeboxRoom(RuntimeEnvironment.getApplication(),
+                (thread, listener) -> {
+                    threads.add(thread);
+                    built[0]++;
+                    return new JukeboxRoomClient(ORIGIN, t, http, sch, store, listener, "");
+                },
+                queued::add);
+
+        asyncRoom.start(); // cold start: client built, start queued (not yet run)
+        asyncRoom.start(); // re-entry before the queued start ran
+        assertEquals(1, built[0]); // must NOT tear down and rebuild the client
+        assertEquals(1, queued.size()); // and must NOT post a duplicate start
+
+        runAll(queued); // the room thread finally runs client.start()
+        assertEquals(1, http.posts.size()); // exactly one room was created
+        assertEquals(1, t.urls.size()); // exactly one socket attempt (handshake in flight)
+
+        asyncRoom.start(); // re-entry while the handshake is still in flight
+        runAll(queued);
+        assertEquals(1, t.urls.size()); // the in-flight handshake was not cancelled
+
+        t.open();
+        assertTrue(asyncRoom.isActive());
+        assertTrue(JukeboxMode.isRoomActive());
+        asyncRoom.stop();
+    }
+
+    private static void runAll(List<Runnable> queue) {
+        List<Runnable> copy = new ArrayList<>(queue);
+        queue.clear();
+        for (Runnable r : copy) {
+            r.run();
+        }
+    }
 }

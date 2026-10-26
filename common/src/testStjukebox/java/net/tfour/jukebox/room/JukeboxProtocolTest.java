@@ -90,6 +90,20 @@ public class JukeboxProtocolTest {
     }
 
     @Test
+    public void parsesNowPlayingSongAndVideoIdFromState() {
+        JukeboxProtocol.Message m = JukeboxProtocol.parse(
+                "{\"t\":\"state\",\"room\":\"r\",\"nowPlaying\":{\"songId\":\"s1\",\"videoId\":\"dQw4w9WgXcQ\",\"title\":\"Song A\"},\"queue\":[],\"listeners\":3}");
+        assertEquals("s1", m.getNowPlayingSongId());
+        assertEquals("dQw4w9WgXcQ", m.getNowPlayingVideoId());
+        assertEquals("Song A", m.getNowPlayingTitle());
+        JukeboxProtocol.Message idle = JukeboxProtocol.parse(
+                "{\"t\":\"state\",\"room\":\"r\",\"nowPlaying\":null,\"queue\":[],\"listeners\":0}");
+        assertTrue(idle.isNowPlayingNull());
+        assertNull(idle.getNowPlayingSongId());
+        assertNull(idle.getNowPlayingVideoId());
+    }
+
+    @Test
     public void validatesVideoIds() {
         assertTrue(JukeboxProtocol.isValidVideoId("dQw4w9WgXcQ"));
         assertTrue(JukeboxProtocol.isValidVideoId("a-b_c-d_e-f"));

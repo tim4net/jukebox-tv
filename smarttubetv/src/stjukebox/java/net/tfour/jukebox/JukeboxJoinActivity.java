@@ -11,9 +11,11 @@ import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.TextView;
 
+import com.liskovsoft.smartyoutubetv2.common.app.views.ViewManager;
 import com.liskovsoft.smartyoutubetv2.tv.R;
 import com.liskovsoft.smartyoutubetv2.tv.ui.browse.BrowseActivity;
 import com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity;
+import com.liskovsoft.smartyoutubetv2.tv.ui.playback.PlaybackActivity;
 
 import net.tfour.jukebox.room.JukeboxLog;
 import net.tfour.jukebox.room.JukeboxQr;
@@ -36,6 +38,8 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     private TextView mStatusView;
     private TextView mNowPlayingView;
     private String mBoundJoinUrl;
+    /** onNewIntent() just re-entered the room; the onStart that follows skips its own. */
+    private boolean mSkipNextStartReenter;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -70,7 +74,8 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
             startActivity(browse);
         });
 
-        JukeboxRoom.instance(this).start();
+        // The room is started in onStart(): onCreate is always followed by onStart,
+        // and starting here as well would race the two back-to-back start() calls.
     }
 
     @Override
@@ -81,7 +86,9 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
             return;
         }
         // Plain (re)launch of the join screen: reuse the live room socket or
-        // reconnect/heal it if it died while we were away.
+        // reconnect/heal it if it died while we were away. When the activity was
+        // restarted, onStart() follows this callback and skips its own re-enter.
+        mSkipNextStartReenter = true;
         reenterRoom("onNewIntent");
     }
 
@@ -128,14 +135,33 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         }
         JukeboxRoom room = JukeboxRoom.instance(this);
         room.addListener(this);
-        // Covers every re-entry path (new instance, restart, resume): reuse the live
+        if (mSkipNextStartReenter) {
+            // onNewIntent() (always followed by onStart when restarted) just
+            // re-entered the room; avoid the redundant duplicate start().
+            mSkipNextStartReenter = false;
+            return;
+        }
+        // Cold start and every other re-entry path (restart, resume): reuse the live
         // room socket or reconnect if it is not live.
         reenterRoom("onStart");
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        // This screen isn't registered with ViewManager. While it is in the
+        // foreground the backgrounded player must not stay the "top view", or a
+        // room "play" would early-return in ViewManager.startView(PlaybackView)
+        // and never bring the player back to the foreground.
+        ViewManager.instance(this).removeTop(PlaybackActivity.class);
+    }
+
+    @Override
     protected void onStop() {
         super.onStop();
+        // If onNewIntent set the flag but no onStart followed (activity was already
+        // visible), the next real onStart must re-enter again.
+        mSkipNextStartReenter = false;
         JukeboxRoom.instance(this).removeListener(this);
     }
 

@@ -149,11 +149,15 @@ public final class JukeboxProtocol {
                 listeners = ((Number) listenersValue).intValue();
             }
             String nowPlayingTitle = null;
+            String nowPlayingSongId = null;
+            String nowPlayingVideoId = null;
             // Explicit null means the room is idle. An absent field is not that signal.
             boolean nowPlayingNull = json.has("nowPlaying") && json.isNull("nowPlaying");
             JSONObject nowPlaying = json.optJSONObject("nowPlaying");
             if (nowPlaying != null) {
                 nowPlayingTitle = stringify(nowPlaying, "title");
+                nowPlayingSongId = stringify(nowPlaying, "songId");
+                nowPlayingVideoId = stringify(nowPlaying, "videoId");
             }
             String errorCode = stringify(json, "code");
             boolean popupsEnabled = Boolean.TRUE.equals(json.opt("popups"));
@@ -161,7 +165,9 @@ public final class JukeboxProtocol {
             if (!popupsEnabled && settings != null) {
                 popupsEnabled = Boolean.TRUE.equals(settings.opt("popups"));
             }
-            return new Message(type, songId, videoId, title, durationMs, listeners, nowPlayingTitle, nowPlayingNull, errorCode, popupsEnabled);
+            return new Message(type, songId, videoId, title, durationMs, listeners,
+                    nowPlayingTitle, nowPlayingSongId, nowPlayingVideoId, nowPlayingNull,
+                    errorCode, popupsEnabled);
         } catch (JSONException e) {
             return unknown();
         }
@@ -320,7 +326,7 @@ public final class JukeboxProtocol {
     }
 
     private static Message unknown() {
-        return new Message(TYPE_UNKNOWN, null, null, null, null, -1, null, false, null, false);
+        return new Message(TYPE_UNKNOWN, null, null, null, null, -1, null, null, null, false, null, false);
     }
 
     /**
@@ -352,12 +358,15 @@ public final class JukeboxProtocol {
         private final Long mDurationMs;
         private final int mListeners;
         private final String mNowPlayingTitle;
+        private final String mNowPlayingSongId;
+        private final String mNowPlayingVideoId;
         private final boolean mNowPlayingNull;
         private final String mErrorCode;
         private final boolean mPopupsEnabled;
 
         private Message(String type, String songId, String videoId, String title, Long durationMs,
-                        int listeners, String nowPlayingTitle, boolean nowPlayingNull, String errorCode,
+                        int listeners, String nowPlayingTitle, String nowPlayingSongId,
+                        String nowPlayingVideoId, boolean nowPlayingNull, String errorCode,
                         boolean popupsEnabled) {
             mType = type;
             mSongId = songId;
@@ -366,6 +375,8 @@ public final class JukeboxProtocol {
             mDurationMs = durationMs;
             mListeners = listeners;
             mNowPlayingTitle = nowPlayingTitle;
+            mNowPlayingSongId = nowPlayingSongId;
+            mNowPlayingVideoId = nowPlayingVideoId;
             mNowPlayingNull = nowPlayingNull;
             mErrorCode = errorCode;
             mPopupsEnabled = popupsEnabled;
@@ -399,6 +410,16 @@ public final class JukeboxProtocol {
 
         public String getNowPlayingTitle() {
             return mNowPlayingTitle;
+        }
+
+        /** Song id inside a "state" message's nowPlaying object, null when absent. */
+        public String getNowPlayingSongId() {
+            return mNowPlayingSongId;
+        }
+
+        /** Video id inside a "state" message's nowPlaying object, null when absent. */
+        public String getNowPlayingVideoId() {
+            return mNowPlayingVideoId;
         }
 
         /** True when a state message has {@code "nowPlaying": null} (room idle, no song). */

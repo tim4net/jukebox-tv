@@ -144,6 +144,12 @@ public class VideoLoaderController extends BasePlayerController {
             return;
         }
 
+        // A jukebox room is active (even idle): previous/suggested videos are
+        // SmartTube's own picks; only the server "play" message opens videos then.
+        if (JukeboxMode.isAutoAdvanceBlocked()) {
+            return;
+        }
+
         openVideoInt(mSuggestionsController.getPrevious());
 
         if (getPlayerTweaksData().isPlayerUiOnNextEnabled()) {
@@ -198,6 +204,11 @@ public class VideoLoaderController extends BasePlayerController {
 
     @Override
     public void onSuggestionItemClicked(Video item) {
+        // A jukebox room is active: suggestions must never replace the room's song.
+        if (JukeboxMode.isAutoAdvanceBlocked()) {
+            return;
+        }
+
         openVideoInt(item);
 
         if (getPlayer() != null)

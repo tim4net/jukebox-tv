@@ -54,6 +54,23 @@ public class JukeboxLauncherTest {
     }
 
     @Test
+    public void leanbackLauncherResolvesToJoinActivityOnly() {
+        // What `monkey -c android.intent.category.LEANBACK_LAUNCHER` and TV
+        // launchers resolve: must also be exclusively JukeboxJoinActivity.
+        Intent intent = new Intent(Intent.ACTION_MAIN);
+        intent.addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER);
+        intent.setPackage(RuntimeEnvironment.getApplication().getPackageName());
+        List<ResolveInfo> ris = RuntimeEnvironment.getApplication().getPackageManager()
+                .queryIntentActivities(intent, 0);
+        assertNotNull(ris);
+        assertEquals("exactly one MAIN/LEANBACK_LAUNCHER activity expected but got: " + ris, 1, ris.size());
+        assertEquals(JukeboxJoinActivity.class.getName(),
+                ris.get(0).activityInfo.targetActivity != null
+                        ? ris.get(0).activityInfo.targetActivity
+                        : ris.get(0).activityInfo.name);
+    }
+
+    @Test
     public void launchIntentForPackageOpensJoinScreen() {
         Intent launch = RuntimeEnvironment.getApplication().getPackageManager()
                 .getLaunchIntentForPackage(RuntimeEnvironment.getApplication().getPackageName());
