@@ -55,7 +55,7 @@ import static org.junit.Assert.assertTrue;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 28)
 public class JukeboxJoinReturnResumeTest {
-    static final String V1 = "dQw4w9WgXcQ";
+    static final String V1 = "dQw4w9WgXcQ", V2 = "9bZkp7q19f0";
 
     // ---- minimal room fakes (same shape as the common module's tests) ----
 
@@ -303,6 +303,141 @@ public class JukeboxJoinReturnResumeTest {
         assertEquals("the retry must open the exact room song", V1, presenter.getVideo().videoId);
         assertEquals("exactly one open, not one per tick", java.util.Arrays.asList(V1), opened);
         assertTrue(logged("JukeboxLaunch", "start PlaybackActivity"));
+
+        ac.pause().stop().destroy();
+    }
+
+    // ---- build 2468: the 2467 gazebo step-2 failure ----
+    // Home mid-song releases the engine; relaunching the join screen logged
+    // "re-enter join screen (onNewIntent)" and the popup attach, but NO resume
+    // attempt ran (no tick lines, no JukeboxLaunch line) and no player opened.
+
+    /** Plays the room song (loaded marker set), like a real playing session. */
+    private JukeboxRoomController playingRoomSong() throws Exception {
+        JukeboxRoomController controller = presenter.getController(JukeboxRoomController.class);
+        assertNotNull("the presenter must have registered the jukebox controller", controller);
+        controller.onVideoLoaded(Video.from(V1)); // loaded + playing
+        // Drain the (legitimate, foreground) launch the join screen's first
+        // resume dispatched for V1: below, only the HELD-BACK launch is asserted.
+        Shadows.shadowOf(app()).getNextStartedActivity();
+        return controller;
+    }
+
+    private void assertRoomSongReopenedExactlyOnce(String via) {
+        assertEquals("the re-entry (" + via + ") must reopen the room's exact song",
+                V1, presenter.getVideo().videoId);
+        assertEquals("exactly one open on the re-entry (" + via + ")",
+                java.util.Arrays.asList(V1), opened);
+        assertNotNull("the player activity must be launched (" + via + ")",
+                Shadows.shadowOf(app()).getNextStartedActivity());
+        assertTrue("the resume decision must be logged (" + via + ")",
+                logged("JukeboxPopup", "room song active but player idle"));
+        assertTrue("the launch must be logged (" + via + ")",
+                logged("JukeboxLaunch", "start PlaybackActivity"));
+    }
+
+    @Test
+    public void relaunchAfterEngineReleaseViaOnNewIntentOpensTheExactRoomSong() throws Exception {
+        // The 2467 flow: the room song plays, HOME stops the join screen and the
+        // engine is released while the app is backgrounded, then the launcher
+        // relaunch delivers onNewIntent to the existing activity.
+        JukeboxForeground.setTestOverride(true);
+        ActivityController<JukeboxJoinActivity> ac = launchJoinScreen();
+        Shadows.shadowOf(Looper.getMainLooper()).idle(); // the first entry opens V1
+        JukeboxRoomController controller = playingRoomSong();
+        ShadowLog.clear();
+        opened.clear();
+
+        // HOME: the join screen stops, the engine is released (app backgrounded).
+        ac.pause().stop();
+        JukeboxForeground.setTestOverride(false);
+        controller.onEngineReleased();
+        Shadows.shadowOf(Looper.getMainLooper()).idle(); // the release-time check defers
+        assertTrue("nothing may open while backgrounded: " + opened, opened.isEmpty());
+        assertTrue("the release-time deferral must be logged",
+                logged("JukeboxPopup", "resume deferred: app backgrounded"));
+
+        // Relaunch: the launcher delivers onNewIntent to the stopped activity,
+        // then onStart/onResume follow (the production warm-relaunch order).
+        JukeboxForeground.setTestOverride(true);
+        ShadowLog.clear();
+        ac.newIntent(new Intent(app(), JukeboxJoinActivity.class));
+        assertTrue("the onNewIntent re-entry must be logged",
+                logged("JukeboxJoin", "re-enter join screen (onNewIntent)"));
+        ac.start();
+        ac.resume();
+        Shadows.shadowOf(Looper.getMainLooper()).idle(); // re-bind + resume retry ticks
+
+        assertRoomSongReopenedExactlyOnce("onNewIntent");
+
+        ac.pause().stop().destroy();
+    }
+
+    @Test
+    public void relaunchAfterEngineReleaseViaOnResumeOpensTheExactRoomSong() throws Exception {
+        // Same failure, cold-restart variant: the stopped activity is brought
+        // back with no onNewIntent — onStart/onResume alone must resume the song.
+        JukeboxForeground.setTestOverride(true);
+        ActivityController<JukeboxJoinActivity> ac = launchJoinScreen();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        JukeboxRoomController controller = playingRoomSong();
+        ShadowLog.clear();
+        opened.clear();
+
+        ac.pause().stop();
+        JukeboxForeground.setTestOverride(false);
+        controller.onEngineReleased();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertTrue("nothing may open while backgrounded", opened.isEmpty());
+
+        // Relaunch without a new intent: onStart + onResume (the retry ticks are
+        // (re-)started on both re-entry paths).
+        JukeboxForeground.setTestOverride(true);
+        ac.start();
+        ac.resume();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        assertRoomSongReopenedExactlyOnce("onResume");
+        assertTrue("the onStart re-entry must be logged",
+                logged("JukeboxJoin", "re-enter join screen (onStart)"));
+
+        ac.pause().stop().destroy();
+    }
+
+    @Test
+    public void songChangeWhileBackgroundedIsHeldBackThenPlaysOnForegroundReturn() throws Exception {
+        // Requirement (2): the host skips to another song while the app is
+        // backgrounded (the takeover block holds the open back); relaunching the
+        // join screen must play that held-back song — the latest nowPlaying
+        // wins, with no other video loaded first.
+        JukeboxForeground.setTestOverride(true);
+        ActivityController<JukeboxJoinActivity> ac = launchJoinScreen();
+        Shadows.shadowOf(Looper.getMainLooper()).idle(); // the first entry opens V1
+        playingRoomSong();
+        ShadowLog.clear();
+        opened.clear();
+
+        ac.pause().stop();
+        JukeboxForeground.setTestOverride(false);
+        t.msg("{\"t\":\"play\",\"song\":{\"songId\":\"s2\",\"videoId\":\"" + V2
+                + "\",\"title\":\"T2\",\"durationMs\":null}}"); // the host skips while backgrounded
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertTrue("the held-back open must be verifiable: " + opened, opened.isEmpty());
+        assertEquals("the latest song must be the room's current one", V2, room.getCurrentVideoId());
+        assertNull("no launch while backgrounded",
+                Shadows.shadowOf(app()).getNextStartedActivity());
+
+        // The user relaunches: the held-back song change plays.
+        JukeboxForeground.setTestOverride(true);
+        ac.newIntent(new Intent(app(), JukeboxJoinActivity.class));
+        ac.start();
+        ac.resume();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals("the held-back song change must play on return",
+                V2, presenter.getVideo().videoId);
+        assertEquals("the latest song only, nothing else loaded first",
+                java.util.Arrays.asList(V2), opened);
 
         ac.pause().stop().destroy();
     }

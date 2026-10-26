@@ -81,6 +81,9 @@ public class JukeboxReopenResumeTest {
                         if ("setPlayWhenReady".equals(name) && args != null && args.length == 1) {
                             playWhenReady[0] = (Boolean) args[0];
                         }
+                        if ("isEngineInitialized".equals(name)) {
+                            return true; // a load in this player implies a live engine
+                        }
                         Class<?> type = method.getReturnType();
                         if (type == boolean.class) return false;
                         if (type == int.class) return 0;

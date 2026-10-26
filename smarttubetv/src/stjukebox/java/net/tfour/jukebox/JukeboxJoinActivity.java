@@ -113,6 +113,14 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
      * Re-entering the join screen re-attaches to the room: {@link JukeboxRoom#start()}
      * is idempotent and self-healing (keeps a live connection, rebuilds/reconnects a
      * dead one), then the UI is re-bound from the current room state.
+     *
+     * Every re-entry also (re-)starts the bounded resume retry: the loop was
+     * cancelled by the previous {@link #onPause()} (or the song played out and
+     * its ticks expired), and build 2467 showed that nothing else reliably
+     * re-asks the controller — a released engine left behind stale loaded-video
+     * markers, every check silently believed "already playing" and the room
+     * stayed dead. onResume() restarts the loop as well (idempotent), so this
+     * is a safety net for any re-entry order.
      */
     private void reenterRoom(String via) {
         JukeboxRoom room = JukeboxRoom.instance(this);
@@ -121,6 +129,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
                         + " active=" + room.isActive() + " -> reuse or reconnect");
         room.start();
         bind(room.getCode(), room.getJoinUrl(), room.getStatus(), room.getNowPlaying());
+        startResumeRetry(via);
     }
 
     /**
