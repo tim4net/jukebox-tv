@@ -247,6 +247,38 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
 
     // ---- install: download ourselves, verify, then (and only then) launch ----
 
+    /** Item 1: the only download host we ever fetch from. */
+    static final String DOWNLOAD_HOST = "jukebox.tfour.net";
+    /** Item 1: the only path prefixes we ever download under. */
+    static final String[] DOWNLOAD_PATH_PREFIXES = {"/apk/", "/install/"};
+
+    /**
+     * Pure item-1 decision: null when {@code url} is a download URL we may
+     * fetch (https, our host, path under /apk/ or /install/), else the logged
+     * reason it must be refused without downloading.
+     */
+    static String invalidDownloadUrlReason(String url) {
+        URL parsed;
+        try {
+            parsed = new URL(url);
+        } catch (IOException malformed) {
+            return "malformed";
+        }
+        if (!"https".equals(parsed.getProtocol())) {
+            return "protocol " + parsed.getProtocol();
+        }
+        if (!DOWNLOAD_HOST.equals(parsed.getHost())) {
+            return "host " + parsed.getHost();
+        }
+        String path = parsed.getPath();
+        for (String prefix : DOWNLOAD_PATH_PREFIXES) {
+            if (path.startsWith(prefix)) {
+                return null;
+            }
+        }
+        return "path " + path;
+    }
+
     /**
      * Install chosen (card Install button, card click, or the app-wide OK key
      * routing): downloads the manifest downloadUrl, verifies it, launches the
@@ -281,6 +313,13 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             if (url == null || url.trim().isEmpty() || versionCode <= 0) {
                 JukeboxLog.i(JukeboxUpdate.LOG_TAG,
                         "install chosen: no manifest download url/versionCode known");
+                runOnMain(() -> cardText("Update download failed \u2014 will retry next time"));
+                return;
+            }
+            String badUrl = invalidDownloadUrlReason(url);
+            if (badUrl != null) {
+                JukeboxLog.i(JukeboxUpdate.LOG_TAG,
+                        "invalid download url (" + badUrl + "), refusing: " + url);
                 runOnMain(() -> cardText("Update download failed \u2014 will retry next time"));
                 return;
             }
@@ -494,7 +533,11 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
     /**
      * Streams the url into {@code destFile}.part and renames to
      * {@code destFile} on success. Logs progress every ~10% (known length) or
-     * every ~2MB.
+     * every ~2MB. Build 2475, item 7: redirects are never followed
+     * ({@code setInstanceFollowRedirects(false)}, plus a getURL() re-check),
+     * only a direct HTTP 200 is accepted, sizes above
+     * {@link #maxDownloadBytes()} (Content-Length and streamed count) are
+     * refused, and the {@code .part} file is deleted on ANY failure.
      */
     protected void downloadHttp(String url, File destFile, ApkDownloader.Progress progress)
             throws IOException {
@@ -503,13 +546,28 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             throw new IOException("cannot create " + dir);
         }
         File part = partOf(destFile);
+        long cap = maxDownloadBytes();
+        URL target = new URL(url);
         HttpURLConnection connection = null;
         try {
-            connection = (HttpURLConnection) new URL(url).openConnection();
+            connection = (HttpURLConnection) target.openConnection();
             connection.setConnectTimeout(30_000);
             connection.setReadTimeout(30_000);
+            connection.setInstanceFollowRedirects(false);
             connection.connect();
+            if (!target.equals(connection.getURL())) {
+                throw new IOException("redirected to " + connection.getURL()
+                        + " (redirects are never followed)");
+            }
+            int code = connection.getResponseCode();
+            if (code != HttpURLConnection.HTTP_OK) {
+                throw new IOException("HTTP " + code + " (only 200 is accepted): " + url);
+            }
             long total = connection.getContentLengthLong();
+            if (total > cap) {
+                throw new IOException("Content-Length " + total + " exceeds the "
+                        + cap + " byte cap: " + url);
+            }
             try (InputStream rawIn = new BufferedInputStream(connection.getInputStream());
                  OutputStream out = new BufferedOutputStream(new FileOutputStream(part))) {
                 byte[] buffer = new byte[64 * 1024];
@@ -520,6 +578,10 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
                 while ((read = rawIn.read(buffer)) > 0) {
                     out.write(buffer, 0, read);
                     done += read;
+                    if (done > cap) {
+                        throw new IOException("download exceeds the " + cap
+                                + " byte cap (" + done + " bytes): " + url);
+                    }
                     int percent = total > 0 ? (int) Math.min(100, done * 100 / total) : 0;
                     boolean percentStep = total > 0 && percent >= nextLoggedPercent;
                     boolean byteStep = done - lastLoggedBytes >= PROGRESS_BYTES_STEP;
@@ -535,6 +597,9 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
                     }
                 }
             }
+        } catch (IOException | RuntimeException failure) {
+            delete(part);
+            throw failure;
         } finally {
             if (connection != null) {
                 connection.disconnect();
