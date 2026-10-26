@@ -465,8 +465,9 @@ public class PlaybackTransportRowPresenter extends PlaybackRowPresenter {
                 @Override
                 public boolean onKey(View view, int keyCode, KeyEvent keyEvent) {
                     // A jukebox room song is active: seek keys (DPAD left/right seeking,
-                    // FF/REW, +/-) are consumed so the room's song can never be seeked.
-                    if (JukeboxMode.isSongSet() && JukeboxMode.isSeekKeyCode(keyCode)) {
+                    // FF/REW, +/-) are consumed so the room's song can never be seeked
+                    // (swallowed + logged, 2469).
+                    if (JukeboxMode.swallowSeekKey(keyCode)) {
                         return true;
                     }
                     // when in seek only allow this keys

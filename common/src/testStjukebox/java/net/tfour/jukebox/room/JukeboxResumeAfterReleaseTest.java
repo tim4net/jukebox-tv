@@ -366,4 +366,77 @@ public class JukeboxResumeAfterReleaseTest {
         assertEquals(V2, presenter.getVideo().videoId);
         assertEquals(java.util.Arrays.asList(V2), opened);
     }
+
+    // ---- build 2469: the 2468 gazebo c1/c2 failures ----
+    // Relaunching the join screen logged nothing at all (c1) or a single stale
+    // in-flight marker line (c2) and no player ever started: silent decision
+    // branches and stale reopen counters from before the engine release.
+
+    /** Restores the observed pre-2469 stale reopen-counter state via reflection. */
+    private void makeReopenCountersStale() throws Exception {
+        Field reopenVideoId = JukeboxRoomController.class.getDeclaredField("mReopenVideoId");
+        reopenVideoId.setAccessible(true);
+        reopenVideoId.set(wired, V1);
+        Field attempts = JukeboxRoomController.class.getDeclaredField("mReopenAttempts");
+        attempts.setAccessible(true);
+        attempts.setInt(wired, 2); // MAX_REOPEN_ATTEMPTS: the cap
+        Field requested = JukeboxRoomController.class.getDeclaredField("mRequestedVideoId");
+        requested.setAccessible(true);
+        requested.set(wired, V1);
+        Field capLogged = JukeboxRoomController.class.getDeclaredField("mCapLoggedVideoId");
+        capLogged.setAccessible(true);
+        capLogged.set(wired, V1); // the cap log is suppressed for this song, too
+    }
+
+    @Test
+    public void staleReopenCountersAfterEngineReleaseDoNotBlockTheReentryResume() throws Exception {
+        goHomeAndReleaseEngine();
+        makeReopenCountersStale();
+        relaunchIntoJoinScreen();
+
+        boolean keepAsking = wired.resumeRoomSongIfNeeded("join:onResume:tick1");
+
+        assertFalse("the open dispatched: the retry loop must stop asking", keepAsking);
+        assertEquals("the exact room song must be reopened despite stale counters",
+                V1, presenter.getVideo().videoId);
+        assertEquals("exactly one open, not one per tick", java.util.Arrays.asList(V1), opened);
+        assertTrue("the reopen must be logged",
+                logged("JukeboxPopup", "room song active but player idle"));
+        assertEquals("the stale cap must be gone: this was a fresh first attempt",
+                1, reopenAttempts());
+    }
+
+    @Test
+    public void resumeAskWithoutAnActiveRoomLogsTheDecisionInsteadOfReturningSilently() throws Exception {
+        room.stop(); // the room is gone: nothing can be resumed
+
+        boolean keepAsking = wired.resumeRoomSongIfNeeded("join:onResume:tick1");
+
+        assertFalse("an inactive room is terminal: the retry loop must stop asking", keepAsking);
+        assertTrue("the decision must be logged (no silent returns)",
+                logged("JukeboxPopup", "resume skipped: room inactive"));
+        assertTrue("nothing may open without a room", opened.isEmpty());
+    }
+
+    @Test
+    public void everyReentryAskDecisionIsLoggedWithItsVia() throws Exception {
+        relaunchIntoJoinScreen();
+
+        // The song is loaded in a live player (setUp): the ask must log the
+        // skip WITH its via tag — never silently.
+        boolean keepAsking = wired.resumeRoomSongIfNeeded("join:onResume:tick1");
+
+        assertFalse(keepAsking);
+        assertTrue("the skip decision must carry the via tag",
+                logged("JukeboxPopup", "(via join:onResume:tick1)"));
+        assertTrue("nothing re-opened while the song plays",
+                opened.isEmpty());
+    }
+
+    /** The controller's reopen-attempt counter, read via reflection (private state). */
+    private int reopenAttempts() throws Exception {
+        Field field = JukeboxRoomController.class.getDeclaredField("mReopenAttempts");
+        field.setAccessible(true);
+        return field.getInt(wired);
+    }
 }

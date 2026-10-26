@@ -441,4 +441,113 @@ public class JukeboxJoinReturnResumeTest {
 
         ac.pause().stop().destroy();
     }
+
+    // ---- build 2469: the 2468 gazebo c1/c2 failures ----
+    // Home mid-song releases the engine; relaunching logged the popup attach
+    // (c1: nothing else) or a single stale in-flight marker line (c2), and no
+    // PlaybackActivity ever started. Stale reopen counters/markers from before
+    // the release must never block the relaunch, and a completely gone player
+    // view must not either.
+
+    /** Restores the observed pre-2469 stale reopen-counter state via reflection. */
+    private void makeReopenCountersStale(String videoId) throws Exception {
+        JukeboxRoomController controller = presenter.getController(JukeboxRoomController.class);
+        assertNotNull(controller);
+        Field reopenVideoId = JukeboxRoomController.class.getDeclaredField("mReopenVideoId");
+        reopenVideoId.setAccessible(true);
+        reopenVideoId.set(controller, videoId);
+        Field attempts = JukeboxRoomController.class.getDeclaredField("mReopenAttempts");
+        attempts.setAccessible(true);
+        attempts.setInt(controller, 2); // MAX_REOPEN_ATTEMPTS: the cap
+        Field requested = JukeboxRoomController.class.getDeclaredField("mRequestedVideoId");
+        requested.setAccessible(true);
+        requested.set(controller, videoId);
+        Field capLogged = JukeboxRoomController.class.getDeclaredField("mCapLoggedVideoId");
+        capLogged.setAccessible(true);
+        capLogged.set(controller, videoId); // the cap log is suppressed for this song, too
+        Field loading = JukeboxRoomController.class.getDeclaredField("mLoadingVideoId");
+        loading.setAccessible(true);
+        loading.set(controller, videoId);
+        Field loadingSince = JukeboxRoomController.class.getDeclaredField("mLoadingSinceMs");
+        loadingSince.setAccessible(true);
+        loadingSince.setLong(controller, android.os.SystemClock.uptimeMillis() - 60_000); // stale by age
+    }
+
+    @Test
+    public void relaunchAfterEngineReleaseWithStaleCountersOpensTheExactRoomSong() throws Exception {
+        // The full 2468 c1 flow: playing -> HOME (engine released under us) ->
+        // relaunch onNewIntent. The release and the relaunch race on a real
+        // device, so the counters may describe the dead engine generation.
+        JukeboxForeground.setTestOverride(true);
+        ActivityController<JukeboxJoinActivity> ac = launchJoinScreen();
+        Shadows.shadowOf(Looper.getMainLooper()).idle(); // the first entry opens V1
+        JukeboxRoomController controller = playingRoomSong();
+        ShadowLog.clear();
+        opened.clear();
+
+        ac.pause().stop();
+        JukeboxForeground.setTestOverride(false);
+        controller.onEngineReleased();
+        Shadows.shadowOf(Looper.getMainLooper()).idle(); // release-time check defers (logged)
+        assertTrue("nothing may open while backgrounded: " + opened, opened.isEmpty());
+
+        // Stale reopen counters/markers left over from before the release.
+        makeReopenCountersStale(V1);
+
+        JukeboxForeground.setTestOverride(true);
+        ShadowLog.clear();
+        ac.newIntent(new Intent(app(), JukeboxJoinActivity.class));
+        ac.start();
+        ac.resume();
+        Shadows.shadowOf(Looper.getMainLooper()).idle(); // re-bind + resume retry ticks
+
+        assertRoomSongReopenedExactlyOnce("stale counters");
+        assertTrue("the stale in-flight marker decision must be logged",
+                logged("JukeboxPopup", "in-flight marker " + V1 + " is stale"));
+
+        ac.pause().stop().destroy();
+    }
+
+    @Test
+    public void relaunchAfterEngineReleaseWithoutAnyPlayerViewOpensTheExactRoomSong() throws Exception {
+        // The 2468 c1 variant: the player view itself is gone (activity
+        // destroyed), only the presenter (and its weak refs) remain.
+        JukeboxForeground.setTestOverride(true);
+        ActivityController<JukeboxJoinActivity> ac = launchJoinScreen();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        JukeboxRoomController controller = playingRoomSong();
+        ShadowLog.clear();
+        opened.clear();
+
+        ac.pause().stop();
+        JukeboxForeground.setTestOverride(false);
+        controller.onEngineReleased();
+        // The whole player view (and the presenter's refs to it) is gone.
+        clearPresenterPlayerView();
+        setPresenterVideo(null);
+        playerView = null;
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertTrue("nothing may open while backgrounded: " + opened, opened.isEmpty());
+
+        JukeboxForeground.setTestOverride(true);
+        ac.newIntent(new Intent(app(), JukeboxJoinActivity.class));
+        ac.start();
+        ac.resume();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        assertRoomSongReopenedExactlyOnce("no player view");
+
+        ac.pause().stop().destroy();
+    }
+
+    /** Drops the presenter's (weak) refs to the player view, as if it was destroyed. */
+    private void clearPresenterPlayerView() throws Exception {
+        Field playerField = PlaybackPresenter.class.getDeclaredField("mPlayer");
+        playerField.setAccessible(true);
+        playerField.set(presenter, new WeakReference<>(null));
+        Field viewField = com.liskovsoft.smartyoutubetv2.common.app.presenters.base.BasePresenter.class
+                .getDeclaredField("mView");
+        viewField.setAccessible(true);
+        viewField.set(presenter, new WeakReference<>(null));
+    }
 }

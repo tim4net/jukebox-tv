@@ -127,6 +127,12 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         JukeboxLog.i("JukeboxJoin",
                 "re-enter join screen (" + via + "): room=" + room.getRoom()
                         + " active=" + room.isActive() + " -> reuse or reconnect");
+        // While the join screen is (going to be) the foreground view, a
+        // stopped backgrounded player must not stay the registered "top view",
+        // or the resume's ViewManager.startView(PlaybackView) would silently
+        // dedup (skip) the launch (2469: that silent skip left the room dead).
+        // onResume() clears it too — this covers the onNewIntent-only path.
+        ViewManager.instance(this).removeTop(PlaybackActivity.class);
         room.start();
         bind(room.getCode(), room.getJoinUrl(), room.getStatus(), room.getNowPlaying());
         startResumeRetry(via);
@@ -231,17 +237,26 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
             if (isFinishing() || isDestroyed()) {
                 return;
             }
-            if (JukeboxRoom.isRoomActive()) {
-                JukeboxRoomController controller = PlaybackPresenter.instance(this)
-                        .getController(JukeboxRoomController.class);
-                if (controller != null
-                        && !controller.resumeRoomSongIfNeeded(
-                                "join:" + mResumeRetryVia + ":tick" + mResumeRetryIndex)) {
-                    // The song opened, or retrying cannot help (reopen cap
-                    // reached for it): stop asking instead of logging the same
-                    // deferral on every remaining tick.
-                    return;
-                }
+            // 2469: every branch of the ask is logged (tag JukeboxJoin/JukeboxPopup)
+            // — the 2468 gazebo runs showed ticks that left no trace at all, so a
+            // silent skip is impossible: the null-controller case (reflective
+            // registration failed) and the controller's own decisions (room
+            // inactive, deferred, dispatched) all say what happened and why.
+            String via = "join:" + mResumeRetryVia + ":tick" + mResumeRetryIndex;
+            JukeboxRoomController controller = PlaybackPresenter.instance(this)
+                    .getController(JukeboxRoomController.class);
+            if (controller == null) {
+                JukeboxLog.i("JukeboxJoin", "resume ask " + via
+                        + ": no jukebox controller registered, asking again later");
+                postNextResumeRetry();
+                return;
+            }
+            if (!controller.resumeRoomSongIfNeeded(via)) {
+                // The song opened, or retrying cannot help (reopen cap reached,
+                // idle room, already playing): stop asking instead of logging
+                // the same deferral on every remaining tick. The decision itself
+                // was logged by the controller.
+                return;
             }
             postNextResumeRetry();
         };

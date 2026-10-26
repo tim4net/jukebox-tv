@@ -126,8 +126,11 @@ public class ViewManager {
      * On running activity, this method invokes standard activity lifecycle: pause, resume etc...
      */
     public void startView(Class<?> viewClass, boolean forceStart) {
-        // Skip starting activity twice to get rid of pausing/resuming activity cycle
+        // Skip starting activity twice to get rid of pausing/resuming activity cycle.
+        // Jukebox: the dedup must be verifiable (no silent launch swallowing), no-op elsewhere.
         if (Utils.isAppInForegroundFixed() && getTopView() == viewClass) {
+            JukeboxLaunch.noteSkip(viewClass.getSimpleName(),
+                    "ViewManager.startView dedup: already the top view");
             return;
         }
 

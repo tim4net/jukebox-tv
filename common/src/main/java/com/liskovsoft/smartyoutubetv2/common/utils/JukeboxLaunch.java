@@ -99,6 +99,18 @@ public final class JukeboxLaunch {
     }
 
     /**
+     * Logs a launch request that {@code ViewManager.startView} silently deduplicated
+     * (the requested view is already the registered top view): without this the
+     * dedup early-return would swallow room resumes with no trace (build 2469).
+     * No-op in other flavors.
+     */
+    public static void noteSkip(String view, String reason) {
+        if (sJukebox) {
+            log("skip " + view + " (" + reason + ")");
+        }
+    }
+
+    /**
      * Logs the incoming intent of a started activity (action/data/flags/referrer)
      * so external launches can be told apart from internal ones. The referrer
      * comes from the started {@link Activity} itself ({@link Activity#getReferrer()},

@@ -30,9 +30,9 @@ public class JukeboxFlavorTest {
 
     @Test
     public void versionCodeIsTheFlavorOverride() throws Exception {
-        // Build 2468: the stjukebox flavor carries its own versionCode on top
+        // Build 2469: the stjukebox flavor carries its own versionCode on top
         // of defaultConfig's 2464, so other flavors stay unaffected.
-        assertEquals(2468, RuntimeEnvironment.getApplication().getPackageManager()
+        assertEquals(2469, RuntimeEnvironment.getApplication().getPackageManager()
                 .getPackageInfo(RuntimeEnvironment.getApplication().getPackageName(), 0).versionCode);
     }
 }

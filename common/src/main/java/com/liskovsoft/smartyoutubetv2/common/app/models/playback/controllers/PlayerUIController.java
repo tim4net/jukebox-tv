@@ -21,6 +21,7 @@ import com.liskovsoft.smartyoutubetv2.common.R;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.VideoGroup;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.BasePlayerController;
+import com.liskovsoft.smartyoutubetv2.common.app.models.playback.JukeboxMode;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.manager.PlayerConstants;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.manager.PlayerUI;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.ui.OptionCategory;
@@ -778,6 +779,12 @@ public class PlayerUIController extends BasePlayerController {
     }
 
     private boolean handlePlayPauseKey(int keyCode) {
+        // Jukebox: while a room song is active the play/pause media keys are
+        // swallowed (logged) — the room owns play/pause, the TV is a listener.
+        // No-op in other flavors / with an inactive room.
+        if (JukeboxMode.swallowPlayPauseKey(keyCode)) {
+            return true;
+        }
         if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE && getPlayer() != null) {
             getPlayer().setPlayWhenReady(!getPlayer().getPlayWhenReady());
             enableUiAutoHideTimeout(); // TODO: move out somehow

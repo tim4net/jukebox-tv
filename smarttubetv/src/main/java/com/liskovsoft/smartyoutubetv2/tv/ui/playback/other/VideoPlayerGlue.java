@@ -264,11 +264,20 @@ public class VideoPlayerGlue extends MaxControlsVideoPlayerGlue<PlayerAdapter> i
 
     @Override
     public void play() {
+        // Jukebox: a room song is active — the room owns play/pause (the TV is a
+        // listener). Swallow (logged) so play/pause keys and clicks cannot touch
+        // the room's song; internal resume paths use the player view directly.
+        if (JukeboxMode.swallowPlayPause("glue play")) {
+            return;
+        }
         super.play();
     }
 
     @Override
     public void pause() {
+        if (JukeboxMode.swallowPlayPause("glue pause")) {
+            return;
+        }
         super.pause();
     }
 
@@ -283,6 +292,9 @@ public class VideoPlayerGlue extends MaxControlsVideoPlayerGlue<PlayerAdapter> i
     }
 
     public void togglePlayback() {
+        if (JukeboxMode.swallowPlayPause("glue toggle")) {
+            return;
+        }
         if (isPlaying()) {
             pause();
         } else {
@@ -292,8 +304,9 @@ public class VideoPlayerGlue extends MaxControlsVideoPlayerGlue<PlayerAdapter> i
 
     /** Skips backwards 10 seconds. */
     public void rewind() {
-        // A jukebox room song is active: seeking the room's song is not allowed.
-        if (JukeboxMode.isSongSet()) {
+        // A jukebox room song is active: seeking the room's song is not allowed
+        // (swallowed + logged, 2469 — the seek keys must not seek).
+        if (JukeboxMode.swallowSeek("rewind")) {
             return;
         }
         long newPosition = getCurrentPosition() - TEN_SECONDS;
@@ -303,8 +316,7 @@ public class VideoPlayerGlue extends MaxControlsVideoPlayerGlue<PlayerAdapter> i
 
     /** Skips forward 10 seconds. */
     public void fastForward() {
-        // A jukebox room song is active: seeking the room's song is not allowed.
-        if (JukeboxMode.isSongSet()) {
+        if (JukeboxMode.swallowSeek("fast_forward")) {
             return;
         }
         if (getDuration() > -1) {
@@ -359,6 +371,13 @@ public class VideoPlayerGlue extends MaxControlsVideoPlayerGlue<PlayerAdapter> i
     public boolean onKey(View v, int keyCode, KeyEvent event) {
         if (!isSingleKeyDown(event.getAction())) {
             return false;
+        }
+
+        // Jukebox: while a room song is active the play/pause media keys are
+        // swallowed (logged) before any action dispatch — the room owns
+        // play/pause, the TV is a listener (build 2469, gazebo c4).
+        if (JukeboxMode.swallowPlayPauseKey(keyCode)) {
+            return true;
         }
 
         boolean handled = mActionListener.onKeyDown(keyCode);

@@ -46,6 +46,8 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     private int mReopenAttempts;
     /** Room videoId whose exhausted reopen cap was already logged (log spam guard). */
     private String mCapLoggedVideoId;
+    /** Last resume-decision log line (dedup guard so repeated identical decisions don't spam). */
+    private String mLastResumeLog;
     /** Room videoId whose "ended" was already reported; never auto-reopened. */
     private String mEndedVideoId;
     /** VideoId whose load is in flight (seen in onNewVideo, not yet onVideoLoaded). */
@@ -237,6 +239,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         mLoadingVideoId = null;
         mLoadingSinceMs = 0L;
         resetReopen();
+        mLastResumeLog = null; // the next decision may repeat a line: log it fresh
         dismissPopupOverlay();
         // Entering JukeboxJoinActivity mid-song runs its onStart() -> start() ->
         // notifyRebind() BEFORE ActivityThread dispatches PlaybackActivity.onStop()
@@ -342,6 +345,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     private void openRoomVideo(String roomVideoId, String reason) {
         JukeboxLog.i(LOG_TAG, reason + ": opening exact room videoId " + roomVideoId
                 + " (attempt " + mReopenAttempts + ")");
+        mLastResumeLog = null; // the next decision may repeat a line: log it fresh
         stopHeartbeat();
         mLoadedVideoId = null;
         mSuppressReports = true;
@@ -358,17 +362,22 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             if (roomVideoId.equals(mRequestedVideoId)) {
                 mRequestedVideoId = null;
             }
-            if (!JukeboxForeground.isAppInForeground() && roomVideoId.equals(mLoadingVideoId)) {
-                // The launch gate just blocked ViewManager.startView (issue #3:
-                // the app backgrounded between the foreground check above and
-                // the launch inside openVideo). With the player activity never
+            if (!JukeboxForeground.isAppInForeground()) {
+                // The launch gate blocked ViewManager.startView (issue #3: the
+                // app backgrounded between the foreground check above and the
+                // launch inside openVideo). With the player activity never
                 // started, no engine load — and so no onVideoLoaded — will ever
-                // clear the in-flight marker. Clear it here, or every retry sees
-                // "load already on its way" and the room stays silent forever.
+                // clear the in-flight marker. Clear it here, and refund the
+                // consumed reopen attempt (2469: stale counters from before the
+                // return must never block the relaunch), or every retry sees
+                // "load already on its way" / "cap reached" and the room stays
+                // silent forever.
                 JukeboxLog.i(LOG_TAG, "launch of " + roomVideoId
-                        + " blocked (app backgrounded): in-flight marker cleared, reopen retried on return");
+                        + " blocked (app backgrounded): in-flight marker cleared and reopen"
+                        + " attempt refunded, retried on return");
                 mLoadingVideoId = null;
                 mLoadingSinceMs = 0L;
+                resetReopen();
             }
         }
     }
@@ -396,14 +405,18 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
      * song loaded counts as playing, and a stale marker is cleared (logged)
      * before the resume proceeds.
      *
+     * Build 2469 (the 2468 gazebo failure this must also survive): every
+     * branch of the decision is logged — a silent return is impossible — and
+     * stale reopen counters/markers from before the engine release can never
+     * block the relaunch (a dead engine's counters describe a player that no
+     * longer exists, so they are reset before the reopen decision).
+     *
      * Deferred while the app is backgrounded (issue #3): opening the video would
      * launch/foreground the player over whatever the user is watching. The check
      * re-runs (in the foreground) when the user returns: re-entering the join
      * screen notifies room listeners, resuming the player view calls it again,
      * and the join screen's bounded retry (see JukeboxJoinActivity) keeps asking
      * for a while so a single mistimed check can never leave the room silent.
-     * Every deferral and every re-entry decision is logged so gazebo runs can
-     * see why nothing played.
      *
      * @return true while a later retry could still succeed on its own (deferred:
      *         app backgrounded, no context yet); false when retrying cannot help
@@ -419,14 +432,16 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     /** @param via caller context for the decision logs (e.g. the join screen retry), or null. */
     private boolean maybeResumeRoomSong(String via) {
         if (!JukeboxRoom.isRoomActive()) {
-            return false; // room gone: nothing to resume
+            logResume(via, "resume skipped: room inactive (no room to resume)");
+            return false;
         }
         if (mSuppressReports) {
-            return true; // a reopen is on the stack right now: transient, ask again later
+            logResume(via, "resume deferred: an openVideo dispatch is on the stack right now");
+            return true; // transient, ask again later
         }
         Context ctx = getContext();
         if (ctx == null) {
-            JukeboxLog.i(LOG_TAG, "resume deferred: no context yet" + viaSuffix(via));
+            logResume(via, "resume deferred: no context yet");
             return true;
         }
         JukeboxRoom room = JukeboxRoom.instance(ctx);
@@ -435,7 +450,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             if (hasLiveEngine() && mLoadedVideoId.equals(roomVideoId)) {
                 // The room's current song is really loaded in a live player: the
                 // release never happened (or a new engine loaded it again).
-                logResumeDecision(via, "resume skipped: room song "
+                logResume(via, "resume skipped: room song "
                         + mLoadedVideoId + " loaded in a live player");
                 return false;
             }
@@ -445,9 +460,9 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             // so the marker alone must never read as "already playing" (build
             // 2467: every re-entry check silently returned here, no player ever
             // opened and the room stayed silent).
-            JukeboxLog.i(LOG_TAG, "resume: loaded marker " + mLoadedVideoId + " is stale ("
+            logResume(via, "resume: loaded marker " + mLoadedVideoId + " is stale ("
                     + (hasLiveEngine() ? "room song changed" : "engine released/no live player")
-                    + ")" + viaSuffix(via) + ": resuming the room song");
+                    + "): resuming the room song");
             mLoadedVideoId = null;
             mLoadingVideoId = null;
             mLoadingSinceMs = 0L;
@@ -455,34 +470,40 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         }
         if (!JukeboxForeground.isAppInForeground()) {
             // The song opens when the user returns; only state has been updated.
-            JukeboxLog.i(LOG_TAG, "resume deferred: app backgrounded" + viaSuffix(via)
-                    + " (song opens on the user's return)");
+            logResume(via, "resume deferred: app backgrounded (song opens on the user's return)");
             return true;
         }
+        if (!hasLiveEngine()) {
+            // No live engine: every reopen counter/marker left over from the
+            // previous engine generation describes a player that no longer
+            // exists. Reset them (2469) so stale counters from before the
+            // release can never block the relaunch below.
+            resetReopen();
+        }
         if (roomVideoId == null) {
-            logResumeDecision(via, "resume skipped: idle room (no current song)");
+            logResume(via, "resume skipped: idle room (no current song)");
             return false;
         }
         if (roomVideoId.equals(mEndedVideoId)) {
-            logResumeDecision(via, "resume skipped: room song " + roomVideoId
+            logResume(via, "resume skipped: room song " + roomVideoId
                     + " already ended and was reported");
             return false;
         }
         if (roomVideoId.equals(mLoadingVideoId)) {
             if (isLoadInFlight()) {
                 // The engine (re)load of the room video is already on its way.
-                logResumeDecision(via, "resume skipped: load of " + roomVideoId + " in flight");
+                logResume(via, "resume skipped: load of " + roomVideoId + " in flight");
                 return false;
             }
-            JukeboxLog.i(LOG_TAG, "resume: in-flight marker " + roomVideoId
+            logResume(via, "resume: in-flight marker " + roomVideoId
                     + " is stale (no load finished within " + LOAD_IN_FLIGHT_TIMEOUT_MS
-                    + "ms)" + viaSuffix(via) + ": resuming the room song");
+                    + "ms): resuming the room song");
             mLoadingVideoId = null;
             mLoadingSinceMs = 0L;
         }
         if (room.isSongFromState()) {
-            JukeboxLog.i(LOG_TAG, "resume deferred: song id came from a state snapshot,"
-                    + " waiting for its own play" + viaSuffix(via));
+            logResume(via, "resume deferred: song id came from a state snapshot,"
+                    + " waiting for its own play");
             return false; // snapshot-sourced song id: wait for its own "play" message
         }
         if (!beginReopen(roomVideoId)) {
@@ -490,7 +511,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             // Log once per song: the join screen retry stops on this answer, but
             // room events keep re-running the check.
             if (!roomVideoId.equals(mCapLoggedVideoId)) {
-                JukeboxLog.i(LOG_TAG, "resume deferred: reopen cap reached for " + roomVideoId + viaSuffix(via));
+                logResume(via, "resume deferred: reopen cap reached for " + roomVideoId);
                 mCapLoggedVideoId = roomVideoId;
             }
             return false;
@@ -518,14 +539,19 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     }
 
     /**
-     * Logs a resume decision of an explicit re-entry ask (the join screen's
-     * bounded retry): room-event re-runs (via null) stay quiet to avoid log
-     * spam, their outcomes (defer/open/stale) are logged where they happen.
+     * Logs a resume decision. Every branch of the resume check goes through
+     * here (build 2469: a silent return must be impossible — the 2468 gazebo
+     * failure showed decision paths that left no trace). An immediately
+     * repeated identical line is skipped so room-event re-runs don't spam, but
+     * the first occurrence of every decision is always logged.
      */
-    private static void logResumeDecision(String via, String msg) {
-        if (via != null && !via.isEmpty()) {
-            JukeboxLog.i(LOG_TAG, msg + viaSuffix(via));
+    private void logResume(String via, String msg) {
+        String line = msg + viaSuffix(via);
+        if (line.equals(mLastResumeLog)) {
+            return;
         }
+        mLastResumeLog = line;
+        JukeboxLog.i(LOG_TAG, line);
     }
 
     private static String viaSuffix(String via) {
@@ -535,20 +561,16 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     /**
      * Public entry for the join screen's bounded return-retry (and anything else
      * that knows the user just came back): runs the idle resume check with a
-     * caller tag so the decision is verifiable in logcat.
+     * caller tag so the decision is verifiable in logcat. Fully logged (2469):
+     * the room-inactive answer is logged too, so a missing room can never be a
+     * silent no-op.
      *
      * @return whether the retry loop should keep asking (see
-     *         {@link #maybeResumeRoomSong()}); false stops it — e.g. once the
+     *         {@link #maybeResumeRoomSong(String)}); false stops it — e.g. once the
      *         reopen cap is reached, so the cap deferral is logged exactly once
      *         instead of on every remaining tick.
      */
     public boolean resumeRoomSongIfNeeded(String via) {
-        if (!JukeboxRoom.isRoomActive()) {
-            return false; // no room: the retry has nothing to ask for
-        }
-        if (mSuppressReports) {
-            return true; // a reopen is on the stack right now: transient
-        }
         return maybeResumeRoomSong(via);
     }
 

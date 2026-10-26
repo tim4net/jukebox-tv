@@ -54,6 +54,7 @@ import com.liskovsoft.smartyoutubetv2.common.app.models.playback.manager.PlayerU
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.ui.ChatReceiver;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.ui.SeekBarSegment;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.PlaybackPresenter;
+import com.liskovsoft.smartyoutubetv2.common.misc.JukeboxControlDispatcher;
 import com.liskovsoft.smartyoutubetv2.common.app.views.PlaybackView;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.controller.ExoPlayerController;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.other.DebugInfoManager;
@@ -616,6 +617,10 @@ public class PlaybackFragment extends SeekModePlaybackFragment implements Playba
         mMediaSession = new MediaSessionCompat(getContext().getApplicationContext(), getContext().getPackageName()); // NOTE: mem leak fix (SegmentTimelineElement)
         mMediaSession.setActive(!disableNotifications);
         mMediaSessionConnector = new MediaSessionConnector(mMediaSession);
+        // Jukebox: while a room song is active, media-button play/pause (and any
+        // media-session seek) are swallowed + logged — the room owns playback.
+        // Other flavors: JukeboxMode is never set, identical default behavior.
+        mMediaSessionConnector.setControlDispatcher(new JukeboxControlDispatcher());
 
         try {
             mMediaSessionConnector.setPlayer(mPlayer);

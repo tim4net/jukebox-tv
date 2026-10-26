@@ -67,6 +67,78 @@ public final class JukeboxMode {
                 || keyCode == KeyEvent.KEYCODE_PLUS;
     }
 
+    /**
+     * True for the media play/pause key family: PLAY_PAUSE, PLAY and PAUSE.
+     * While a room song is active these toggle/play/pause the room's song,
+     * which the room owns — the TV is a listener (build 2469, gazebo c4:
+     * MEDIA_PLAY_PAUSE paused the player via the media session).
+     */
+    public static boolean isPlayPauseKeyCode(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+                || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY
+                || keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE;
+    }
+
+    /**
+     * Logs "JukeboxKeys: swallowed &lt;key&gt;" and returns true while a room song is
+     * active and the given key is a play/pause media key — the caller must then
+     * consume the event so the room's song keeps playing. Other flavors (and an
+     * inactive room) always return false: normal SmartTube behavior unchanged.
+     */
+    public static boolean swallowPlayPauseKey(int keyCode) {
+        if (!sSongSet || !isPlayPauseKeyCode(keyCode)) {
+            return false;
+        }
+        logSwallowed(KeyEvent.keyCodeToString(keyCode));
+        return true;
+    }
+
+    /**
+     * Same swallow for seek/skip keys (DPAD left/right, FF/REW, +/-): logs
+     * "JukeboxKeys: swallowed &lt;key&gt;" and returns true so the room's song can
+     * never be seeked. Inactive room: false, nothing logged.
+     */
+    public static boolean swallowSeekKey(int keyCode) {
+        if (!sSongSet || !isSeekKeyCode(keyCode)) {
+            return false;
+        }
+        logSwallowed(KeyEvent.keyCodeToString(keyCode));
+        return true;
+    }
+
+    /**
+     * Same swallow for non-keycode play/pause call sites (glue actions, media
+     * session play/pause callbacks): {@code what} names the swallowed action in
+     * the "JukeboxKeys: swallowed &lt;what&gt;" log line.
+     */
+    public static boolean swallowPlayPause(String what) {
+        if (!sSongSet) {
+            return false;
+        }
+        logSwallowed(what);
+        return true;
+    }
+
+    /**
+     * Same swallow for non-keycode seek call sites (glue rewind/fast-forward):
+     * {@code what} names the swallowed seek in the log line.
+     */
+    public static boolean swallowSeek(String what) {
+        if (!sSongSet) {
+            return false;
+        }
+        logSwallowed(what);
+        return true;
+    }
+
+    private static void logSwallowed(String what) {
+        try {
+            android.util.Log.i("JukeboxKeys", "swallowed " + what);
+        } catch (RuntimeException ignored) {
+            // Plain JVM unit tests: android.util.Log is not mocked there.
+        }
+    }
+
     private static void logBlocked() {
         try {
             android.util.Log.i("JukeboxMode", "auto-advance blocked: roomActive=" + sRoomActive
