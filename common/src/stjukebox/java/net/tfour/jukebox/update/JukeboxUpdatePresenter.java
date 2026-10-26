@@ -866,11 +866,11 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
                 info.applicationInfo.publicSourceDir = path;
             }
             return signingCertSha256Of(info); // signingInfo first, then signatures
-        } catch (Throwable tolerated) {
+        } catch (RuntimeException | LinkageError tolerated) {
             // Archive parsing quirks are tolerated (including the API 28
             // v2/v3 verifier blowing up in sandboxes): JarFile v1 stays
             // authoritative, a missing PackageManager cert never fails an
-            // otherwise-verified archive.
+            // otherwise-verified archive. Any other Error propagates.
             return null;
         }
     }
