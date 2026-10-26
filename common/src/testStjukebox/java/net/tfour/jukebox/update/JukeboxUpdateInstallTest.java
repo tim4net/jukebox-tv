@@ -106,6 +106,13 @@ public class JukeboxUpdateInstallTest {
         boolean productionLauncher;
         boolean deferAsync;
         final List<Runnable> deferred = new ArrayList<>();
+        // Build 2475 review seams (items 2/3): defaults keep the CURRENT behavior
+        // (no cert/sha256/downgrade checks yet), the new tests override them.
+        int installedVersion;
+        String archiveCertSha256 = PINNED_CERT_SHA256;
+        String installedCertSha256 = PINNED_CERT_SHA256;
+        String manifestSha256;
+        String fileSha256;
 
         TestPresenter(Context context, CurrentActivity current) {
             super(context, current);
@@ -139,7 +146,36 @@ public class JukeboxUpdateInstallTest {
         protected PackageInfo archiveInfoOf(String path) {
             return archive;
         }
+
+        @Override
+        protected int installedVersionCode() {
+            return installedVersion;
+        }
+
+        @Override
+        protected String archiveSigningCertSha256(String path) {
+            return archiveCertSha256;
+        }
+
+        @Override
+        protected String installedSigningCertSha256() {
+            return installedCertSha256;
+        }
+
+        @Override
+        protected String manifestApkSha256(String downloadUrl) {
+            return manifestSha256;
+        }
+
+        @Override
+        protected String sha256OfFile(java.io.File file) {
+            return fileSha256;
+        }
     }
+
+    /** The pinned signing-cert digest (build 2475, item 2; spec value, no spaces). */
+    private static final String PINNED_CERT_SHA256 =
+            "0DC9138549DDEDF665BC48F1F717B5CF35893943699746ED93657525FDE7C609";
 
     private Application app;
     private ActivityController<Activity> controller;
@@ -161,10 +197,15 @@ public class JukeboxUpdateInstallTest {
 
     /** Drives the manifest result the way production does (via ManifestChecker). */
     private TestPresenter offered(TestPresenter presenter) {
+        return offered(presenter, MANIFEST_URL, 2473);
+    }
+
+    /** Drives the manifest result with an explicit downloadUrl / versionCode. */
+    private TestPresenter offered(TestPresenter presenter, String downloadUrl, int versionCode) {
         JukeboxUpdatePresenter.ManifestChecker checker =
                 new JukeboxUpdatePresenter.ManifestChecker(app, presenter);
-        checker.onChangelogReceived(false, "32.68", 2473, Arrays.asList("fix"),
-                new Uri[]{Uri.parse(MANIFEST_URL)});
+        checker.onChangelogReceived(false, "32.68", versionCode, Arrays.asList("fix"),
+                new Uri[]{Uri.parse(downloadUrl)});
         return presenter;
     }
 
@@ -173,9 +214,13 @@ public class JukeboxUpdateInstallTest {
     }
 
     private TestPresenter offeredWithMatchingApk() {
+        return offeredWithMatchingApk(MANIFEST_URL);
+    }
+
+    private TestPresenter offeredWithMatchingApk(String downloadUrl) {
         TestPresenter presenter = new TestPresenter(app, () -> activity);
         presenter.archive = matchingArchive();
-        return offered(presenter);
+        return offered(presenter, downloadUrl, 2473);
     }
 
     private PackageInfo matchingArchive() {
@@ -415,5 +460,246 @@ public class JukeboxUpdateInstallTest {
         presenter.onAppForeground(); // no crash, no launch
         assertEquals(0, presenter.launcher.calls);
         assertNull(Shadows.shadowOf(app).getNextStartedActivity());
+    }
+
+    // ---- build 2475, review items 1/2/3/4/6 (phase 1: failing tests only) ----
+
+    // item 1: downloadUrl validation (https://jukebox.tfour.net/ under /apk/ or /install/)
+
+    @Test
+    public void plainHttpDownloadUrlIsRefusedWithoutDownloading() {
+        TestPresenter presenter = offeredWithMatchingApk("http://jukebox.tfour.net/apk/jukebox-tv.apk");
+
+        presenter.install();
+
+        assertEquals("an http:// download url must never be downloaded", 0, presenter.downloader.calls);
+        assertEquals("a refused download must never launch", 0, presenter.launcher.calls);
+        assertTrue("the refusal must be logged", logged("invalid download url"));
+        assertTrue("the user must see the retry notice: " + cardText(activity),
+                cardText(activity).contains("Update download failed"));
+    }
+
+    @Test
+    public void foreignHostDownloadUrlIsRefusedWithoutDownloading() {
+        TestPresenter presenter =
+                offeredWithMatchingApk("https://evil.example/apk/jukebox-tv.apk");
+
+        presenter.install();
+
+        assertEquals("a foreign host must never be downloaded", 0, presenter.downloader.calls);
+        assertEquals(0, presenter.launcher.calls);
+        assertTrue(logged("invalid download url"));
+    }
+
+    @Test
+    public void downloadUrlPathOutsideApkOrInstallIsRefused() {
+        TestPresenter presenter =
+                offeredWithMatchingApk("https://jukebox.tfour.net/downloads/jukebox-tv.apk");
+
+        presenter.install();
+
+        assertEquals("a path outside /apk/ or /install/ must never be downloaded",
+                0, presenter.downloader.calls);
+        assertEquals(0, presenter.launcher.calls);
+        assertTrue(logged("invalid download url"));
+    }
+
+    @Test
+    public void jukeboxApkAndInstallUrlsAreDownloaded() {
+        // Guard (must stay green): our own host + /apk/ and /install/ paths are fine.
+        TestPresenter apk = offeredWithMatchingApk("https://jukebox.tfour.net/apk/jukebox-tv-2474-test.apk");
+        apk.install();
+        assertEquals("an /apk/ url on our host must be downloaded", 1, apk.downloader.calls);
+
+        TestPresenter install =
+                offeredWithMatchingApk("https://jukebox.tfour.net/install/jukebox-tv.apk");
+        install.install();
+        assertEquals("an /install/ url on our host must be downloaded", 1, install.downloader.calls);
+    }
+
+    // item 2: signer cert + manifest sha256 verification
+
+    @Test
+    public void wrongSignerCertRefusesLaunchAndDeletesTheApk() {
+        TestPresenter presenter = offeredWithMatchingApk();
+        // The downloaded apk is signed by someone else (not the pinned digest).
+        presenter.archiveCertSha256 =
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        presenter.installedCertSha256 = PINNED_CERT_SHA256;
+
+        presenter.install();
+
+        assertEquals("an apk signed by someone else must never launch", 0, presenter.launcher.calls);
+        assertFalse("a wrongly signed apk must be deleted", expectedApk().exists());
+        assertTrue(logged("wrong signer"));
+    }
+
+    @Test
+    public void signerCertNotMatchingTheInstalledAppRefusesLaunch() {
+        TestPresenter presenter = offeredWithMatchingApk();
+        // The archive cert matches the pin, but the installed app was signed
+        // differently: the download must still be refused.
+        presenter.archiveCertSha256 = PINNED_CERT_SHA256;
+        presenter.installedCertSha256 =
+                "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+
+        presenter.install();
+
+        assertEquals(0, presenter.launcher.calls);
+        assertFalse(expectedApk().exists());
+        assertTrue(logged("wrong signer"));
+    }
+
+    @Test
+    public void matchingPinnedSignerCertLaunches() {
+        // Guard (must stay green): the pinned cert on both sides installs.
+        TestPresenter presenter = offeredWithMatchingApk();
+        presenter.archiveCertSha256 = PINNED_CERT_SHA256;
+        presenter.installedCertSha256 = PINNED_CERT_SHA256;
+
+        presenter.install();
+
+        assertEquals(1, presenter.launcher.calls);
+    }
+
+    @Test
+    public void manifestSha256MismatchRefusesLaunch() {
+        TestPresenter presenter = offeredWithMatchingApk();
+        presenter.manifestSha256 =
+                "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
+        presenter.fileSha256 =
+                "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD";
+
+        presenter.install();
+
+        assertEquals("a file hashing differently than the manifest says must never launch",
+                0, presenter.launcher.calls);
+        assertFalse(expectedApk().exists());
+        assertTrue(logged("sha256"));
+    }
+
+    @Test
+    public void matchingManifestSha256Launches() {
+        // Guard (must stay green): the file hashes exactly as the manifest says.
+        TestPresenter presenter = offeredWithMatchingApk();
+        presenter.manifestSha256 = "ABC";
+        presenter.fileSha256 = "ABC";
+
+        presenter.install();
+
+        assertEquals(1, presenter.launcher.calls);
+    }
+
+    @Test
+    public void absentManifestSha256SkipsTheFileHashCheck() {
+        // Guard (must stay green): no manifest sha256 entry = nothing to check.
+        TestPresenter presenter = offeredWithMatchingApk();
+        presenter.manifestSha256 = null;
+        presenter.fileSha256 = null;
+
+        presenter.install();
+
+        assertEquals(1, presenter.launcher.calls);
+    }
+
+    // item 3: downgrade guard
+
+    @Test
+    public void offeredVersionCodeNotNewerThanInstalledIsNeverOfferedOrInstalled() {
+        TestPresenter presenter = new TestPresenter(app, () -> activity);
+        presenter.installedVersion = 2473;
+
+        // The manifest offers the SAME build we already have (not newer).
+        offered(presenter, MANIFEST_URL, 2473);
+
+        assertNull("an equal versionCode must not be offered", cardOf(activity));
+        presenter.install();
+        assertEquals("a downgrade must never be downloaded", 0, presenter.downloader.calls);
+        assertEquals(0, presenter.launcher.calls);
+        assertTrue(logged("downgrade"));
+    }
+
+    // item 4: prune stale downloads
+
+    @Test
+    public void staleDownloadsArePrunedBeforeEachDownloadButTheCurrentOneSurvives() throws IOException {
+        TestPresenter presenter = offeredWithMatchingApk();
+        java.io.File dir = new java.io.File(app.getCacheDir(), "jukebox-update");
+        assertTrue(dir.mkdirs() || dir.isDirectory());
+        java.io.File staleApk = new java.io.File(dir, "jukebox-update-1111.apk");
+        java.io.File stalePart = new java.io.File(dir, "jukebox-update-2222.apk.part");
+        java.io.File currentPart = new java.io.File(dir, "jukebox-update-2473.apk.part");
+        writeBytes(staleApk);
+        writeBytes(stalePart);
+        writeBytes(currentPart);
+
+        presenter.install();
+
+        assertFalse("old jukebox-update-*.apk files must be pruned", staleApk.exists());
+        assertFalse("old *.part files must be pruned", stalePart.exists());
+        assertTrue("the current pending download's files must survive",
+                expectedApk().exists() || currentPart.exists());
+    }
+
+    @Test
+    public void staleDownloadsArePrunedWhenTheAppComesToTheForeground() throws IOException {
+        TestPresenter presenter = offeredWithMatchingApk();
+        java.io.File dir = new java.io.File(app.getCacheDir(), "jukebox-update");
+        assertTrue(dir.mkdirs() || dir.isDirectory());
+        java.io.File staleApk = new java.io.File(dir, "jukebox-update-1111.apk");
+        java.io.File stalePart = new java.io.File(dir, "jukebox-update-2222.apk.part");
+        writeBytes(staleApk);
+        writeBytes(stalePart);
+
+        presenter.onAppForeground();
+
+        assertFalse("old *.apk files must be pruned on foreground", staleApk.exists());
+        assertFalse("old *.part files must be pruned on foreground", stalePart.exists());
+    }
+
+    private static void writeBytes(java.io.File file) throws IOException {
+        try (OutputStream out = new FileOutputStream(file)) {
+            out.write(new byte[64]);
+        }
+    }
+
+    // item 6: the immutable Offer captured once
+
+    @Test
+    public void thePendingDownloadUsesTheOfferCapturedWhenInstallWasChosen() {
+        TestPresenter presenter = offeredWithMatchingApk();
+        presenter.deferAsync = true;
+        presenter.install(); // queued behind the runAsync seam
+
+        // A NEW offer arrives before the queued install runs: the queued work
+        // must use the offer captured at queue time, not the new one.
+        presenter.offerFound("33.0", 2474, "https://jukebox.tfour.net/apk/jukebox-tv-2474.apk");
+        presenter.deferred.get(0).run();
+
+        assertEquals("the captured offer's url must be downloaded",
+                MANIFEST_URL, presenter.downloader.url);
+        assertEquals("the captured offer's dest must be used",
+                expectedApk().getPath(), presenter.downloader.dest.getPath());
+        assertEquals("the captured offer's versionCode must be verified/launched",
+                1, presenter.launcher.calls);
+    }
+
+    @Test
+    public void aDeferredInstallVerifiesAgainstItsOwnOfferNotANewerOne() {
+        TestPresenter presenter = offeredWithMatchingApk();
+        // The download finishes while the app is backgrounded: the verified file
+        // is kept for the next foreground transition.
+        net.tfour.jukebox.room.JukeboxForeground.setTestOverride(false);
+        presenter.install();
+        net.tfour.jukebox.room.JukeboxForeground.setTestOverride(true);
+
+        // A new offer (2474) arrives while the app is backgrounded; the deferred
+        // install of the 2473 apk must still verify against ITS OWN offer.
+        presenter.offerFound("33.0", 2474, "https://jukebox.tfour.net/apk/jukebox-tv-2474.apk");
+        presenter.onAppForeground();
+
+        assertEquals("the deferred 2473 install must still launch", 1, presenter.launcher.calls);
+        assertEquals("the kept 2473 file must be launched (not deleted as 'wrong versionCode')",
+                expectedApk().getPath(), presenter.launcher.path);
     }
 }

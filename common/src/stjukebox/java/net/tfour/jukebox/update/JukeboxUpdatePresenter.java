@@ -459,12 +459,44 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         return createInstallLauncher();
     }
 
+    // ---- build 2475 review seams (PHASE 1 STUBS: unused, current behavior) ----
+
+    /** The versionCode installed right now (downgrade guard, item 3). Stub. */
+    protected int installedVersionCode() {
+        return 0;
+    }
+
+    /** SHA-256 (hex) of the downloaded apk's signing cert (item 2). Stub. */
+    protected String archiveSigningCertSha256(String path) {
+        return null;
+    }
+
+    /** SHA-256 (hex) of the installed app's signing cert (item 2). Stub. */
+    protected String installedSigningCertSha256() {
+        return null;
+    }
+
+    /** The manifest's optional sha256 for the offered apk, or null when absent (item 2). Stub. */
+    protected String manifestApkSha256(String downloadUrl) {
+        return null;
+    }
+
+    /** SHA-256 (hex) of a file on disk (item 2). Stub. */
+    protected String sha256OfFile(File file) {
+        return null;
+    }
+
+    /** Download byte cap, ~200MB (item 7). Stub (unused yet). */
+    protected long maxDownloadBytes() {
+        return 200L * 1024 * 1024;
+    }
+
     /**
      * Streams the url into {@code destFile}.part and renames to
      * {@code destFile} on success. Logs progress every ~10% (known length) or
      * every ~2MB.
      */
-    private static void downloadHttp(String url, File destFile, ApkDownloader.Progress progress)
+    protected void downloadHttp(String url, File destFile, ApkDownloader.Progress progress)
             throws IOException {
         File dir = destFile.getParentFile();
         if (dir != null && !dir.exists() && !dir.mkdirs()) {

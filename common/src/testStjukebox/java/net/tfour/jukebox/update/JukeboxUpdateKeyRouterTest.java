@@ -183,6 +183,29 @@ public class JukeboxUpdateKeyRouterTest {
         assertSame(KeyEvent.KEYCODE_DPAD_UP, activity.lastKeyEvent.getKeyCode());
     }
 
+    // ---- build 2475, review item 5 (phase 1: failing test only) ----
+
+    @Test
+    public void okUpWithoutARoutedDownPassesThroughToThePlayer() {
+        RecordingActivity activity = newActivity().get();
+        RecordingInstall install = new RecordingInstall();
+        JukeboxUpdateCard.show(activity, "32.68", 2473, install);
+        assertNotNull(cardOf(activity));
+
+        // The router must act on an OK ACTION_UP only if IT consumed that same
+        // key's ACTION_DOWN. A bare UP (its DOWN never reached/never routed
+        // through this router) must pass through, never install.
+        boolean consumed = dispatch(activity, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_CENTER);
+
+        assertFalse("an unrouted UP must not be consumed by the router", consumed);
+        assertEquals("an unrouted UP must never install", 0, install.calls);
+        assertNotNull("the player must see the unrouted UP", activity.lastKeyEvent);
+        assertEquals("the activity must receive exactly the unrouted UP",
+                KeyEvent.KEYCODE_DPAD_CENTER, activity.lastKeyEvent.getKeyCode());
+        assertFalse("no routing log for an unrouted UP",
+                logged("key routed to the update card"));
+    }
+
     @Test
     public void attachIsIdempotentAndDetachRestoresTheOriginalCallback() {
         RecordingActivity activity = newActivity().get();
