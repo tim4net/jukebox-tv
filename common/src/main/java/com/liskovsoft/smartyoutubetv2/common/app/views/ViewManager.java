@@ -31,6 +31,7 @@ import com.liskovsoft.smartyoutubetv2.common.utils.JukeboxLaunch;
 import com.liskovsoft.smartyoutubetv2.common.utils.Utils;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
 
+import java.lang.ref.WeakReference;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Stack;
@@ -40,6 +41,12 @@ public class ViewManager {
     @SuppressLint("StaticFieldLeak")
     private static ViewManager sInstance;
     private final Context mContext;
+    /**
+     * Last non-application context {@link #instance(Context)} was asked with
+     * (weakly held): the jukebox launch gate uses it to recognize a launch
+     * requested by one of the app's own resumed/focused activities.
+     */
+    private WeakReference<Context> mCallerContext;
     private final Map<Class<?>, Class<? extends Activity>> mViewMapping;
     private final Map<Class<? extends Activity>, Class<? extends Activity>> mParentMapping;
     private final Stack<Class<? extends Activity>> mActivityStack;
@@ -65,7 +72,17 @@ public class ViewManager {
             sInstance = new ViewManager(context.getApplicationContext());
         }
 
+        if (context != null && context != sInstance.mContext) {
+            sInstance.mCallerContext = new WeakReference<>(context);
+        }
+
         return sInstance;
+    }
+
+    /** The context the current launch was requested with (weakly held), or null. */
+    private Context callerContext() {
+        WeakReference<Context> ref = mCallerContext;
+        return ref != null ? ref.get() : null;
     }
 
     public void register(Class<?> viewClass, Class<? extends Activity> activityClass) {
@@ -126,7 +143,9 @@ public class ViewManager {
         if (activityClass != null) {
             // Jukebox gate (no-op in other flavors): never start an activity while
             // the app is backgrounded (another app in use) — logged under JukeboxLaunch.
-            if (JukeboxLaunch.checkLaunch(activityClass.getSimpleName(), "ViewManager.startView")) {
+            // The caller context makes an own resumed/focused activity the caller of
+            // a foreground launch (e.g. the join screen), never a blocked one.
+            if (JukeboxLaunch.checkLaunch(activityClass.getSimpleName(), "ViewManager.startView", callerContext())) {
                 startActivity(activityClass);
             }
         } else {
@@ -157,7 +176,7 @@ public class ViewManager {
                     Log.d(TAG, "Launching parent activity: " + parentActivity.getSimpleName());
                     // Jukebox gate (no-op in other flavors): user-driven (BACK), but
                     // still funneled through the same logged gate for uniformity.
-                    if (JukeboxLaunch.checkLaunch(parentActivity.getSimpleName(), "ViewManager.startParentView")) {
+                    if (JukeboxLaunch.checkLaunch(parentActivity.getSimpleName(), "ViewManager.startParentView", activity)) {
                         Intent intent = new Intent(activity, parentActivity);
 
                         safeStartActivity(activity, intent);
@@ -193,7 +212,7 @@ public class ViewManager {
 
         // Jukebox gate (no-op in other flavors): a default-view launch while
         // backgrounded would cold-start the app over whatever the user watches.
-        if (JukeboxLaunch.checkLaunch(lastActivity.getSimpleName(), "ViewManager.startDefaultView")) {
+        if (JukeboxLaunch.checkLaunch(lastActivity.getSimpleName(), "ViewManager.startDefaultView", callerContext())) {
             startActivity(lastActivity);
         }
     }

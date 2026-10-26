@@ -143,8 +143,10 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
             return false;
         }
         JukeboxLaunch.noteIntent(this, "JukeboxJoinActivity.forward", intent);
+        // This activity is the caller (resumed/holding focus whenever this runs):
+        // the gate must treat the forward as a foreground launch, never blocked.
         if (!JukeboxLaunch.checkLaunch(SplashActivity.class.getSimpleName(),
-                "join screen forwarded non-launcher intent")) {
+                "join screen forwarded non-launcher intent", this)) {
             // Blocked while backgrounded: the forwarded launch would take over
             // the TV. Stay on the join screen; the intent is verifiable above.
             return false;

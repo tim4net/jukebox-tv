@@ -358,12 +358,14 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     }
 
     /**
-     * Re-opens the room's current song when the player sits idle while a song is
+     * Re-opens the room's current song when nothing plays it while a song is
      * active — e.g. the engine was released by re-entering the join screen
-     * mid-song. Without this the client keeps the (deduplicated) song id, nothing
-     * plays, heartbeats stop and "ended" is never sent: the room queue stalls
-     * until a phone skips the song. Bounded by the same {@link #beginReopen} cap
-     * as mismatch reopens, never reopens a video whose "ended" was already
+     * mid-song, or no player exists at all (join screen in the foreground:
+     * openVideo starts PlaybackActivity through the gated ViewManager.startView).
+     * Without this the client keeps the (deduplicated) song id, nothing plays,
+     * heartbeats stop and "ended" is never sent: the room queue stalls until a
+     * phone skips the song. Bounded by the same {@link #beginReopen} cap as
+     * mismatch reopens, never reopens a video whose "ended" was already
      * reported, never opens a song id that only a "state" snapshot provided (its
      * "play" message stays the only instruction to open a video), and never
      * duplicates a load that is still in flight.
@@ -377,7 +379,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
      * Every deferral is logged so gazebo runs can see why nothing played.
      *
      * @return true while a later retry could still succeed on its own (deferred:
-     *         app backgrounded, no player yet); false when retrying cannot help
+     *         app backgrounded, no context yet); false when retrying cannot help
      *         and the join screen's retry loop should stop asking (song loaded,
      *         reopen dispatched, idle room, song ended, snapshot-sourced song, or
      *         the reopen cap reached — logged once per song).
@@ -401,11 +403,15 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             return true;
         }
         Context ctx = getContext();
-        PlaybackView player = getPlayer();
-        if (ctx == null || player == null) {
-            JukeboxLog.i(LOG_TAG, "resume deferred: no player yet" + viaSuffix(via));
+        if (ctx == null) {
+            JukeboxLog.i(LOG_TAG, "resume deferred: no context yet" + viaSuffix(via));
             return true;
         }
+        // No player yet (e.g. the user sits on the join screen) is NOT a deferral
+        // anymore (build 2466 repeated "no player yet" forever and the room stayed
+        // silent): openVideo below starts PlaybackActivity through the gated
+        // ViewManager.startView, which creates the player.
+        PlaybackView player = getPlayer();
         JukeboxRoom room = JukeboxRoom.instance(ctx);
         String roomVideoId = room.getCurrentVideoId();
         if (roomVideoId == null || roomVideoId.equals(mEndedVideoId)) {

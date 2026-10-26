@@ -1,6 +1,7 @@
 package com.liskovsoft.smartyoutubetv2.common.utils;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 
@@ -28,6 +29,16 @@ public final class JukeboxLaunch {
     /** Flavor-provided foreground answer (stjukebox only). */
     public interface Gate {
         boolean isAppInForeground();
+
+        /**
+         * Caller-aware foreground answer: a launch asked for by one of the app's
+         * own resumed/focused activities counts as foreground even while the
+         * process-wide state is momentarily in transition (same-task hops).
+         * Falls back to the process-wide answer by default.
+         */
+        default boolean isCallerInForeground(Context caller) {
+            return isAppInForeground();
+        }
     }
 
     private static volatile boolean sJukebox;
@@ -54,11 +65,24 @@ public final class JukeboxLaunch {
      * @param reason   caller context (e.g. "ViewManager.startView")
      */
     public static boolean checkLaunch(String activity, String reason) {
+        return checkLaunch(activity, reason, null);
+    }
+
+    /**
+     * Same as {@link #checkLaunch(String, String)} with the caller's context: if
+     * the caller is one of the app's own live, resumed/focused activities (e.g.
+     * ViewManager.startView invoked with an activity context), the launch is a
+     * foreground launch — transitional hops inside our own task (Splash -> Join ->
+     * Playback) must never read backgrounded.
+     *
+     * @param caller  the Context the launch was requested with, or null
+     */
+    public static boolean checkLaunch(String activity, String reason, Context caller) {
         Gate gate = sGate;
         if (!sJukebox || gate == null) {
             return true; // other flavors (or not initialized yet): old behavior
         }
-        boolean foreground = gate.isAppInForeground();
+        boolean foreground = caller != null ? gate.isCallerInForeground(caller) : gate.isAppInForeground();
         if (foreground) {
             log("start " + activity + " (" + reason + ")");
             return true;

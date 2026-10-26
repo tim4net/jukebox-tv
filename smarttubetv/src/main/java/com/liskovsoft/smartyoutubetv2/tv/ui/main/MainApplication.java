@@ -59,6 +59,11 @@ public class MainApplication extends MultiDexApplication implements Configuratio
     public void onCreate() {
         super.onCreate();
 
+        // Jukebox flavor hooks FIRST: the activity lifecycle tracker (the launch
+        // gate's foreground answer) must be registered before any activity of
+        // ours can start/resume, or the first hop would be missed.
+        setupJukeboxHooks();
+
         // ByeByeDPI fix
         // https://android-review.googlesource.com/c/platform/external/conscrypt/+/89408/
         // NOTE: Android 10+ (API 29+) uses system Conscrypt TLS; custom Security providers are unnecessary
@@ -86,7 +91,6 @@ public class MainApplication extends MultiDexApplication implements Configuratio
 
         setupGlobalExceptionHandler();
         setupViewManager();
-        setupJukeboxHooks();
     }
 
     /**
