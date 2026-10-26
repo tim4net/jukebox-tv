@@ -3,13 +3,22 @@ package net.tfour.jukebox;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
 
+import com.liskovsoft.smartyoutubetv2.common.app.models.playback.JukeboxMode;
+import com.liskovsoft.smartyoutubetv2.common.app.presenters.PlaybackPresenter;
+import com.liskovsoft.smartyoutubetv2.common.app.views.ViewManager;
+import com.liskovsoft.smartyoutubetv2.common.utils.JukeboxLaunch;
 import com.liskovsoft.smartyoutubetv2.tv.R;
 import com.liskovsoft.smartyoutubetv2.tv.ui.browse.BrowseActivity;
 import com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity;
 
+import net.tfour.jukebox.room.JukeboxForeground;
 import net.tfour.jukebox.room.JukeboxRoom;
+import net.tfour.jukebox.update.JukeboxUpdate;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -41,13 +50,39 @@ public class JukeboxJoinActivityForwardTest {
 
     @Before
     public void setUp() throws Exception {
-        // JukeboxRoom is a static singleton: reset it so room-start assertions are
-        // deterministic regardless of test order.
-        resetJukeboxRoom();
+        // Static singletons leak across classes. Reset before every test so a
+        // prior suite cannot change whether a view intent is forwarded.
+        resetProcessState();
     }
 
-    private static void resetJukeboxRoom() throws Exception {
+    @After
+    public void tearDown() throws Exception {
+        // This class starts JukeboxRoom on the plain-launch paths. Drop that
+        // singleton (and every other static this process touches) so later
+        // tests do not depend on this class having run first.
+        resetProcessState();
+    }
+
+    private static void resetProcessState() throws Exception {
         Field field = JukeboxRoom.class.getDeclaredField("sInstance");
+        field.setAccessible(true);
+        JukeboxRoom room = (JukeboxRoom) field.get(null);
+        if (room != null) {
+            room.stop();
+        }
+        new Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null);
+        field.set(null, null);
+        JukeboxMode.setRoomActive(false);
+        JukeboxMode.setSongSet(false);
+        JukeboxForeground.resetForTests();
+        JukeboxLaunch.resetForTests();
+        JukeboxUpdate.resetForTests();
+        resetSingleton(PlaybackPresenter.class, "sInstance");
+        resetSingleton(ViewManager.class, "sInstance");
+    }
+
+    private static void resetSingleton(Class<?> clazz, String fieldName) throws Exception {
+        Field field = clazz.getDeclaredField(fieldName);
         field.setAccessible(true);
         field.set(null, null);
     }
