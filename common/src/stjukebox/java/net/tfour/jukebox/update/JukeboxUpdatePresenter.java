@@ -158,6 +158,8 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
      */
     public void onAppForeground() {
         final String pending = mPendingInstallPath;
+        // Build 2475, item 4: stale downloads never outlive a foreground pass.
+        pruneStaleDownloads(pending != null ? new File(pending) : null);
         if (pending == null || !JukeboxForeground.isAppInForeground()) {
             return;
         }
@@ -392,6 +394,9 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
                 return;
             }
             File destFile = downloadDest(versionCode);
+            // Build 2475, item 4: prune stale downloads before each download
+            // (the current pending download's files survive).
+            pruneStaleDownloads(destFile);
             JukeboxLog.i(JukeboxUpdate.LOG_TAG,
                     "install chosen: downloading the update ourselves"
                             + " (the upstream cache/update.apk is never used)");
@@ -426,6 +431,43 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
     private File downloadDest(int versionCode) {
         return new File(new File(mAppContext.getCacheDir(), DOWNLOAD_DIR),
                 "jukebox-update-" + versionCode + ".apk");
+    }
+
+    /**
+     * Build 2475, item 4: deletes every stale download in the download dir
+     * ({@code jukebox-update-*.apk} and {@code *.part}), keeping only the
+     * current pending file {@code keep} and its {@code .part}.
+     */
+    private void pruneStaleDownloads(File keep) {
+        File[] files = new File(mAppContext.getCacheDir(), DOWNLOAD_DIR).listFiles();
+        if (files == null) {
+            return;
+        }
+        for (File file : files) {
+            if (isPrunableDownloadFileName(file.getName(), keep)) {
+                JukeboxLog.i(JukeboxUpdate.LOG_TAG, "pruning stale download: " + file);
+                delete(file);
+            }
+        }
+    }
+
+    /**
+     * Pure item-4 decision: true when {@code name} is a stale download file
+     * ({@code jukebox-update-*.apk} / {@code *.part}) that is neither the
+     * kept file {@code keep} nor its {@code .part}.
+     */
+    static boolean isPrunableDownloadFileName(String name, File keep) {
+        if (name == null || !name.startsWith("jukebox-update-")) {
+            return false;
+        }
+        String base = name.endsWith(".part")
+                ? name.substring(0, name.length() - ".part".length()) : name;
+        if (!base.endsWith(".apk")) {
+            return false;
+        }
+        String keepName = keep != null ? keep.getName() : null;
+        return !name.equals(keepName)
+                && !(keepName != null && name.equals(keepName + ".part"));
     }
 
     private static File partOf(File destFile) {
