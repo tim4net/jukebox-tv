@@ -470,7 +470,7 @@ public class JukeboxJoinReturnResumeTest {
         loading.set(controller, videoId);
         Field loadingSince = JukeboxRoomController.class.getDeclaredField("mLoadingSinceMs");
         loadingSince.setAccessible(true);
-        loadingSince.setLong(controller, android.os.SystemClock.uptimeMillis() - 60_000); // stale by age
+        loadingSince.setLong(controller, android.os.SystemClock.elapsedRealtime() - 60_000); // stale by age
     }
 
     @Test

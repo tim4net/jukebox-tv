@@ -64,21 +64,39 @@ public class JukeboxJoinActivityForwardTest {
     }
 
     private static void resetProcessState() throws Exception {
+        // Stop the room and let its already-posted main-thread callbacks run
+        // while it is still the singleton. A new Handler's removeCallbacks
+        // does not see the room's own Handler, and a late callback after the
+        // singleton is cleared would construct a fresh room for the next test.
+        dropRoom();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        dropRoom();
+        new Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null);
+        JukeboxMode.setRoomActive(false);
+        JukeboxMode.setSongSet(false);
+        JukeboxForeground.resetForTests();
+        JukeboxForeground.setTestOverride(null);
+        JukeboxLaunch.resetForTests();
+        JukeboxUpdate.resetForTests();
+        resetSingleton(PlaybackPresenter.class, "sInstance");
+        resetSingleton(ViewManager.class, "sInstance");
+    }
+
+    private static void dropRoom() throws Exception {
         Field field = JukeboxRoom.class.getDeclaredField("sInstance");
         field.setAccessible(true);
         JukeboxRoom room = (JukeboxRoom) field.get(null);
         if (room != null) {
             room.stop();
+            Field threadField = JukeboxRoom.class.getDeclaredField("mThread");
+            threadField.setAccessible(true);
+            android.os.HandlerThread thread =
+                    (android.os.HandlerThread) threadField.get(room);
+            if (thread != null) {
+                thread.quitSafely();
+            }
         }
-        new Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null);
         field.set(null, null);
-        JukeboxMode.setRoomActive(false);
-        JukeboxMode.setSongSet(false);
-        JukeboxForeground.resetForTests();
-        JukeboxLaunch.resetForTests();
-        JukeboxUpdate.resetForTests();
-        resetSingleton(PlaybackPresenter.class, "sInstance");
-        resetSingleton(ViewManager.class, "sInstance");
     }
 
     private static void resetSingleton(Class<?> clazz, String fieldName) throws Exception {

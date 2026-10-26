@@ -48,6 +48,12 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     private ImageView mQrView;
     /** The layout's own default-focus view; handed focus back when the room goes idle. */
     private Button mBrowseView;
+    /**
+     * Last room-playing answer applied to focus. Default focus moves to the
+     * join action only on the idle-to-playing transition, not on every
+     * state or onResume.
+     */
+    private boolean mRoomSongActive;
     private TextView mCodeView;
     private TextView mStatusView;
     private TextView mNowPlayingView;
@@ -296,13 +302,12 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     }
 
     /**
-     * Issue #8 (2477 bug 3): while the room is playing, the join screen's
-     * default focus must not be the Browse YouTube button — on the post-update
-     * cold launch a DPAD_CENTER press hit Browse and briefly loaded a
-     * non-room video. Focus the join action (the QR) instead and let OK open
-     * the player at the room video (the resume check runs its usual bounded,
-     * logged decision loop). With no active room song the layout default
-     * (Browse) stays, so the button stays reachable and unchanged otherwise.
+     * While the room is playing, OK on the QR opens the player at the room
+     * video. Default focus moves onto that join action only on the
+     * idle-to-playing transition: a later state or onResume must not pull
+     * focus off Browse once the user has moved there. With no room song the
+     * layout default (Browse) stays, and a playing-to-idle transition hands
+     * focus back to it explicitly.
      */
     private void updateDefaultFocus() {
         if (mQrView == null) {
@@ -310,6 +315,10 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         }
         JukeboxRoom room = JukeboxRoom.instance(this);
         boolean roomPlaying = room.isActive() && room.getCurrentVideoId() != null;
+        boolean becamePlaying = roomPlaying && !mRoomSongActive;
+        // setFocusable(false) clears focus, so read this before that call.
+        boolean qrHadFocus = mQrView.hasFocus();
+        mRoomSongActive = roomPlaying;
         mQrView.setFocusable(roomPlaying);
         mQrView.setClickable(roomPlaying);
         if (roomPlaying) {
@@ -317,15 +326,15 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
                 JukeboxLog.i("JukeboxJoin", "join action (OK on QR): opening the player at the room video");
                 startResumeRetry("onOk");
             });
-            if (!mQrView.hasFocus()) {
+            if (becamePlaying && !mQrView.hasFocus()) {
                 mQrView.requestFocus();
             }
         } else {
             mQrView.setOnClickListener(null);
-            if (mQrView.hasFocus() && mBrowseView != null) {
-                // The room went idle: hand the default focus back to the layout's
-                // own default (Browse) explicitly — Android gives no guarantee
-                // that a view losing focusability alone restores it.
+            if (qrHadFocus && mBrowseView != null) {
+                // The room went idle while the join action held focus: hand the
+                // default back to the layout's own default (Browse). Losing
+                // focusability does not restore it.
                 mBrowseView.requestFocus();
             }
         }
@@ -346,7 +355,21 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     public void onStateChanged(String nowPlaying) {
         mNowPlayingView.setText(nowPlaying != null && !nowPlaying.isEmpty()
                 ? getString(R.string.jukebox_now_playing, nowPlaying) : "");
+        boolean wasPlaying = mRoomSongActive;
         updateDefaultFocus();
+        if (!wasPlaying && mRoomSongActive && !isFinishing()) {
+            // The first resume tick often runs before the websocket state
+            // arrives and treats "no song known yet" as a terminal idle.
+            // The idle-to-playing transition is when the song becomes known:
+            // open the player now (a snapshot-sourced id on the join screen
+            // is the room's current song, not a fresh foreground snapshot
+            // that should wait for its own play).
+            JukeboxRoomController controller = PlaybackPresenter.instance(this)
+                    .getController(JukeboxRoomController.class);
+            if (controller == null || controller.resumeRoomSongIfNeeded("join:onState")) {
+                startResumeRetry("onState");
+            }
+        }
     }
 
     /** Renders a QR code of {@code text} into a square bitmap, or null on failure. */

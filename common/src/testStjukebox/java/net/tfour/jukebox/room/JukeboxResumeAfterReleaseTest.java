@@ -1,12 +1,12 @@
 package net.tfour.jukebox.room;
 
+import android.app.Activity;
+import android.content.Intent;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
-import android.os.SystemClock;
 
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
-import com.liskovsoft.smartyoutubetv2.common.app.models.playback.BasePlayerController;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.JukeboxMode;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.PlaybackPresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.views.PlaybackView;
@@ -20,14 +20,13 @@ import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
-import org.robolectric.shadows.ShadowLog;
 
-import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
@@ -45,20 +44,17 @@ import static org.junit.Assert.assertTrue;
  * after the engine was released, so the guard "a song is already loaded:
  * nothing to resume" silently returned on every re-entry check.
  *
- * Covered here:
+ * Covered here, through player and room events (opens are the activities
+ * {@code openVideo} starts):
  * <ul>
- * <li>a released engine / no live player is ALWAYS "not playing", regardless of
- * stale loaded-video markers (exactly the observed 2467 state, restored via
- * reflection): the relaunch resume re-opens the room's exact song, once, and
- * the decision is logged;</li>
- * <li>a clean release defers (logged) while the app is backgrounded — no
- * launch over whatever app is in use (issue #3 kept) — and opens on the
- * return to the foreground;</li>
- * <li>a stale in-flight marker (load that never settled, e.g. released
- * mid-load) cannot block the resume forever;</li>
- * <li>a song change the takeover block held back while the app was
- * backgrounded opens the LATEST song on return, with no other video loaded
- * first.</li>
+ * <li>a released engine is not "already playing": a load callback that
+ * arrives after the release still re-opens the room song, once;</li>
+ * <li>a clean release defers while the app is backgrounded — no launch over
+ * whatever app is in use (issue #3 kept) — and opens on the return to the
+ * foreground;</li>
+ * <li>an in-flight load that never settles cannot block the resume forever;</li>
+ * <li>a song change held back while the app was backgrounded opens the
+ * LATEST song on return, with no other video loaded first.</li>
  * </ul>
  */
 @RunWith(RobolectricTestRunner.class)
@@ -73,8 +69,6 @@ public class JukeboxResumeAfterReleaseTest {
     JukeboxRoom room;
     PlaybackPresenter presenter;
     JukeboxRoomController wired;
-    /** Every openVideo the presenter dispatches (exactly-once guard). */
-    final List<String> opened = new ArrayList<>();
     /** Stateful proxy player: engine liveness flips when the engine is released. */
     boolean[] engineInit = {true};
     boolean[] playWhenReady = {false};
@@ -84,8 +78,8 @@ public class JukeboxResumeAfterReleaseTest {
     public void setUp() throws Exception {
         JukeboxMode.setRoomActive(false);
         JukeboxMode.setSongSet(false);
+        JukeboxForeground.resetForTests();
         JukeboxForeground.setTestOverride(null); // Robolectric defaults to foreground
-        ShadowLog.clear();
         resetSingleton(PlaybackPresenter.class, "sInstance");
         resetSingleton(ViewManager.class, "sInstance");
 
@@ -117,22 +111,8 @@ public class JukeboxResumeAfterReleaseTest {
                 });
         presenter = PlaybackPresenter.instance(RuntimeEnvironment.getApplication());
         presenter.setView(player);
-        setPresenterVideo(null);
-
-        opened.clear();
-        BasePlayerController recorder = new BasePlayerController() {
-            @Override
-            public void onNewVideo(Video item) {
-                if (item != null) {
-                    opened.add(item.videoId);
-                }
-            }
-        };
-        Field listenersField = PlaybackPresenter.class.getDeclaredField("mEventListeners");
-        listenersField.setAccessible(true);
-        @SuppressWarnings("unchecked")
-        List<Object> listeners = (List<Object>) listenersField.get(presenter);
-        listeners.add(recorder);
+        ViewManager.instance(RuntimeEnvironment.getApplication())
+                .register(PlaybackView.class, Activity.class);
 
         t = new JukeboxRoomClientTest.FakeTransport();
         http = new JukeboxRoomClientTest.FakeHttp();
@@ -156,14 +136,15 @@ public class JukeboxResumeAfterReleaseTest {
         wired.onVideoLoaded(Video.from(V1));
         assertTrue(playWhenReady[0]);
         assertTrue("the loaded song must count as playing while the engine is live",
-                markersSayLoadedAndLive());
-        opened.clear();
+                engineInit[0]);
+        startedActivities(); // drop anything the setup load itself launched
     }
 
     @After
     public void tearDown() throws Exception {
         JukeboxMode.setRoomActive(false);
         JukeboxMode.setSongSet(false);
+        JukeboxForeground.resetForTests();
         JukeboxForeground.setTestOverride(null);
         new Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null);
         if (room != null) {
@@ -189,42 +170,15 @@ public class JukeboxResumeAfterReleaseTest {
         field.set(null, value);
     }
 
-    private void setPresenterVideo(Video video) throws Exception {
-        Field field = PlaybackPresenter.class.getDeclaredField("mVideo");
-        field.setAccessible(true);
-        field.set(presenter, new WeakReference<>(video));
-    }
-
-    /** The controller's own loaded marker, read via reflection (private state). */
-    private String loadedMarker() throws Exception {
-        Field field = JukeboxRoomController.class.getDeclaredField("mLoadedVideoId");
-        field.setAccessible(true);
-        return (String) field.get(wired);
-    }
-
-    private String loadingMarker() throws Exception {
-        Field field = JukeboxRoomController.class.getDeclaredField("mLoadingVideoId");
-        field.setAccessible(true);
-        return (String) field.get(wired);
-    }
-
-    private void setLoadingSince(long uptimeMs) throws Exception {
-        Field field = JukeboxRoomController.class.getDeclaredField("mLoadingSinceMs");
-        field.setAccessible(true);
-        field.setLong(wired, uptimeMs);
-    }
-
-    private boolean markersSayLoadedAndLive() throws Exception {
-        return V1.equals(loadedMarker()) && engineInit[0];
-    }
-
-    private static boolean logged(String tag, String fragment) {
-        for (ShadowLog.LogItem item : ShadowLog.getLogs()) {
-            if (tag.equals(item.tag) && item.msg != null && item.msg.contains(fragment)) {
-                return true;
-            }
+    /** Activities {@code openVideo} actually started since the last drain. */
+    private static List<String> startedActivities() {
+        List<String> names = new ArrayList<>();
+        Intent intent;
+        while ((intent = Shadows.shadowOf(RuntimeEnvironment.getApplication()).getNextStartedActivity()) != null) {
+            names.add(intent.getComponent() != null
+                    ? intent.getComponent().getClassName() : String.valueOf(intent.getAction()));
         }
-        return false;
+        return names;
     }
 
     /** HOME: all our activities stopped, engine released by the stopped player. */
@@ -234,61 +188,46 @@ public class JukeboxResumeAfterReleaseTest {
         wired.onEngineReleased(); // ...and told the controller so
     }
 
-    /** Relaunch of the join screen: the user is back, nothing plays yet. */
-    private void relaunchIntoJoinScreen() throws Exception {
+    /** Relaunch of the join screen: the user is back. */
+    private void relaunchIntoJoinScreen() {
         JukeboxForeground.setTestOverride(true);
-        setPresenterVideo(null); // stale released-view ids must not matter either
     }
 
     // ---- requirement (1): released engine + stale markers ----
 
     @Test
-    public void staleLoadedMarkersAfterEngineReleaseDoNotBlockTheReentryResume() throws Exception {
+    public void staleLoadedMarkersAfterEngineReleaseDoNotBlockTheReentryResume() {
         goHomeAndReleaseEngine();
-        // The observed 2467 on-device state: the release path left the loaded and
-        // in-flight markers behind (the player view and the presenter's video
-        // still carry the released song's id), so every re-entry check silently
-        // believed "already loaded/loading". Restored here via reflection — the
-        // fix must not trust them without a live engine.
-        Field loaded = JukeboxRoomController.class.getDeclaredField("mLoadedVideoId");
-        loaded.setAccessible(true);
-        loaded.set(wired, V1);
-        Field loading = JukeboxRoomController.class.getDeclaredField("mLoadingVideoId");
-        loading.setAccessible(true);
-        loading.set(wired, V1);
-        setLoadingSince(SystemClock.uptimeMillis() - 60_000); // stale by age, too
+        // Flush the setup play and the release resume while backgrounded.
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        // A load callback after the engine is already dead must not read as
+        // "already playing". The resume re-opens the room song.
+        wired.onVideoLoaded(Video.from(V1));
+        assertTrue("the late load did not open anything while the engine is dead",
+                startedActivities().isEmpty());
         relaunchIntoJoinScreen();
 
         boolean keepAsking = wired.resumeRoomSongIfNeeded("join:onResume:tick1");
 
         assertFalse("the open dispatched: the retry loop must stop asking", keepAsking);
         assertEquals("the exact room song must be reopened", V1, presenter.getVideo().videoId);
-        assertEquals("exactly one open, not one per tick", java.util.Arrays.asList(V1), opened);
-        assertTrue("the stale-marker decision must be logged",
-                logged("JukeboxPopup", "loaded marker " + V1 + " is stale"));
-        assertTrue("the reopen must be logged",
-                logged("JukeboxPopup", "room song active but player idle"));
-        assertNull("the stale loaded markers must be cleared", loadedMarker());
-        // (The in-flight marker may be V1 again: the reopen dispatched a fresh load.)
+        assertEquals("exactly one open, not one per tick",
+                Arrays.asList(Activity.class.getName()), startedActivities());
     }
 
     @Test
-    public void cleanEngineReleaseDefersWhileBackgroundedAndReopensOnReturn() throws Exception {
+    public void cleanEngineReleaseDefersWhileBackgroundedAndReopensOnReturn() {
         goHomeAndReleaseEngine();
         Shadows.shadowOf(Looper.getMainLooper()).idle(); // the posted resume check runs
 
-        // Deferred (logged) while the app is backgrounded: no launch over
-        // whatever app is in use (issue #3 kept), nothing opened.
-        assertTrue("the release-time check must defer (nothing plays yet)",
-                logged("JukeboxPopup", "resume deferred: app backgrounded"));
-        assertTrue("no open while backgrounded: " + opened, opened.isEmpty());
-        assertNull("no launch while backgrounded",
-                Shadows.shadowOf(RuntimeEnvironment.getApplication()).getNextStartedActivity());
+        // Deferred while the app is backgrounded: no launch over whatever app
+        // is in use (issue #3 kept), nothing opened.
+        assertTrue("no open while backgrounded", startedActivities().isEmpty());
 
         // Relaunching the join screen while STILL backgrounded stays blocked.
         boolean keepAsking = wired.resumeRoomSongIfNeeded("join:onResume:tick1");
         assertTrue("still backgrounded: the retry must keep deferring", keepAsking);
-        assertTrue("no open while backgrounded", opened.isEmpty());
+        assertTrue("no open while backgrounded", startedActivities().isEmpty());
 
         // The user is back (join screen resumed): the exact song opens, once.
         relaunchIntoJoinScreen();
@@ -296,90 +235,85 @@ public class JukeboxResumeAfterReleaseTest {
         assertFalse(keepAsking);
         assertEquals("the room's exact song must reopen on the re-entry",
                 V1, presenter.getVideo().videoId);
-        assertEquals(java.util.Arrays.asList(V1), opened);
+        assertEquals(Arrays.asList(Activity.class.getName()), startedActivities());
     }
 
     @Test
-    public void staleInFlightMarkerAloneCannotSilenceTheRoomForever() throws Exception {
+    public void staleInFlightMarkerAloneCannotSilenceTheRoomForever() {
         goHomeAndReleaseEngine();
-        // A load that never settled (e.g. the engine was released mid-load) and
-        // the clearing path never ran: only the in-flight marker is stranded.
-        Field loaded = JukeboxRoomController.class.getDeclaredField("mLoadedVideoId");
-        loaded.setAccessible(true);
-        loaded.set(wired, null);
-        Field loading = JukeboxRoomController.class.getDeclaredField("mLoadingVideoId");
-        loading.setAccessible(true);
-        loading.set(wired, V1);
-        setLoadingSince(SystemClock.uptimeMillis() - 60_000); // older than the load timeout
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        // A load that never settles (engine released mid-load): onNewVideo set
+        // the in-flight marker and no onVideoLoaded will clear it.
+        wired.onNewVideo(Video.from(V1));
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(60_000));
         relaunchIntoJoinScreen();
 
         wired.resumeRoomSongIfNeeded("join:onResume:tick1");
 
         assertEquals("a stale in-flight marker must not block the resume",
                 V1, presenter.getVideo().videoId);
-        assertEquals(java.util.Arrays.asList(V1), opened);
-        assertTrue(logged("JukeboxPopup", "in-flight marker " + V1 + " is stale"));
+        assertEquals(Arrays.asList(Activity.class.getName()), startedActivities());
     }
 
-    // ---- issue #8 (2477 bug 3): the in-flight marker vs. cold launch / timeout ----
+    // ---- in-flight marker: a normal pending load is not a second open ----
 
-    /** Restores ONLY a young in-flight marker (no loaded marker) via reflection. */
-    private void makeYoungInFlightMarker() throws Exception {
-        Field loaded = JukeboxRoomController.class.getDeclaredField("mLoadedVideoId");
-        loaded.setAccessible(true);
-        loaded.set(wired, null);
-        Field loading = JukeboxRoomController.class.getDeclaredField("mLoadingVideoId");
-        loading.setAccessible(true);
-        loading.set(wired, V1);
-        setLoadingSince(SystemClock.uptimeMillis()); // young: well within the load timeout
-    }
-
-    @Test
-    public void youngInFlightMarkerWithoutAPlayerClearsAndResumesTheColdLaunch() throws Exception {
-        // Issue #8 (2477): a cold launch has NO player activity at all, so no
-        // onVideoLoaded can ever clear a stranded marker. The resume must not
-        // skip on it — no matter how young it is.
-        presenter.setView(null); // cold launch: no player view/activity exists
-        relaunchIntoJoinScreen();
-        makeYoungInFlightMarker();
-
-        boolean keepAsking = wired.resumeRoomSongIfNeeded("join:onResume:tick1");
-
-        assertFalse("the open dispatched: the retry loop must stop asking", keepAsking);
-        assertEquals("a stranded young marker must not block the cold-launch resume",
-                V1, presenter.getVideo().videoId);
-        assertEquals("exactly one open, not one per tick", java.util.Arrays.asList(V1), opened);
-        assertTrue("the stale-marker decision must be logged",
-                logged("JukeboxPopup", "in-flight marker " + V1 + " is stale"));
-        assertTrue("the no-holder reason must be logged",
-                logged("JukeboxPopup", "the player/activity that started it is gone"));
+    /**
+     * Home clears the loaded marker (engine release). Come back to the
+     * foreground with a player that is live again, then start a load the
+     * public way: {@code onNewVideo}.
+     */
+    private void releaseThenStartPendingLoad() {
+        goHomeAndReleaseEngine();
+        // Flush the setUp "play" post and the release's resume check while
+        // backgrounded, so neither opens the video before the pending load.
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        wired.onNewVideo(Video.from(V1));
+        JukeboxForeground.setTestOverride(true);
+        engineInit[0] = true;
+        startedActivities();
     }
 
     @Test
-    public void youngInFlightMarkerWithALivePlayerDefersUntilTheLoadTimeoutClearsIt() throws Exception {
-        // A young in-flight load started by a LIVE player may still settle
-        // (onVideoLoaded): the resume must defer to it and open nothing...
-        relaunchIntoJoinScreen();
-        makeYoungInFlightMarker(); // setUp's player view is alive, engine live
+    public void youngPendingLoadWithoutAnAttachedPlayerIsNotReopened() {
+        // onNewVideo has run and the player activity has not attached. That
+        // is a normal pending load, not a stale marker: the resume must not
+        // open the room video again.
+        goHomeAndReleaseEngine();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        wired.onNewVideo(Video.from(V1));
+        presenter.setView(null);
+        JukeboxForeground.setTestOverride(true);
+        startedActivities();
 
         boolean keepAsking = wired.resumeRoomSongIfNeeded("join:onResume:tick1");
 
-        assertFalse("a young in-flight load in a live player must defer the resume", keepAsking);
-        assertTrue("nothing may open while the load is in flight: " + opened, opened.isEmpty());
-        assertTrue(logged("JukeboxPopup", "load of " + V1 + " in flight"));
+        assertFalse("a pending load is not a reason to keep asking", keepAsking);
+        assertNull("a normal pending load must not be opened again", presenter.getVideo());
+        List<String> opens = startedActivities();
+        assertTrue("nothing may open: " + opens, opens.isEmpty());
+    }
 
-        // ...but only until the load timeout: a load that never settles (e.g. a
-        // very slow network) is a stale marker afterwards, and the room song
-        // must open (timeout boundary: older than LOAD_IN_FLIGHT_TIMEOUT_MS).
-        setLoadingSince(SystemClock.uptimeMillis() - 9_000);
+    @Test
+    public void livePlayerKeepsAPendingLoadUntilFifteenSecondsThenOpensOnce() {
+        releaseThenStartPendingLoad();
+
+        // 9s is past the old 8s window and still inside 15s.
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(9_000));
+        boolean keepAsking = wired.resumeRoomSongIfNeeded("join:onResume:tick1");
+
+        assertFalse("a live player's pending load must defer inside 15s", keepAsking);
+        assertNull("nothing is opened at 9s", presenter.getVideo());
+        List<String> opens = startedActivities();
+        assertTrue("nothing may open while the load is in flight: " + opens, opens.isEmpty());
+
+        // 16s is past 15s: the load did not settle, so the room video opens once.
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(7_000));
         keepAsking = wired.resumeRoomSongIfNeeded("join:onResume:tick2");
 
         assertFalse("the open dispatched: the retry loop must stop asking", keepAsking);
-        assertEquals("a load older than the timeout must not block the resume",
-                V1, presenter.getVideo().videoId);
-        assertEquals(java.util.Arrays.asList(V1), opened);
-        assertTrue("the timeout reason must be logged",
-                logged("JukeboxPopup", "no load finished within 8000ms"));
+        assertEquals("past 15s the room video opens", V1, presenter.getVideo().videoId);
+        assertEquals("past 15s the room video opens exactly once",
+                Arrays.asList(Activity.class.getName()), startedActivities());
     }
 
     // ---- requirement (2): song change held back while backgrounded ----
@@ -395,11 +329,8 @@ public class JukeboxResumeAfterReleaseTest {
 
         assertEquals("the latest song must be the room's current one",
                 V2, room.getCurrentVideoId());
-        assertTrue("the held-back open must be logged",
-                logged("JukeboxRoom", "play " + V2 + " while backgrounded: deferred"));
-        assertTrue("nothing may open while backgrounded: " + opened, opened.isEmpty());
-        assertNull("no launch while backgrounded",
-                Shadows.shadowOf(RuntimeEnvironment.getApplication()).getNextStartedActivity());
+        List<String> held = startedActivities();
+        assertTrue("nothing may open while backgrounded: " + held, held.isEmpty());
 
         // The user returns to the foreground: the held-back song change plays —
         // the latest nowPlaying wins, and no other video is loaded first.
@@ -408,7 +339,7 @@ public class JukeboxResumeAfterReleaseTest {
 
         assertEquals("the latest room song must open on return", V2, presenter.getVideo().videoId);
         assertEquals("exactly the latest song, nothing else loaded first",
-                java.util.Arrays.asList(V2), opened);
+                Arrays.asList(Activity.class.getName()), startedActivities());
     }
 
     @Test
@@ -417,87 +348,66 @@ public class JukeboxResumeAfterReleaseTest {
         t.msg(JukeboxRoomClientTest.play("s2", V2));
         Shadows.shadowOf(Looper.getMainLooper()).idle();
 
-        // Every re-entry retry while still backgrounded keeps deferring (logged).
+        // Every re-entry retry while still backgrounded keeps deferring.
         assertTrue(wired.resumeRoomSongIfNeeded("join:onResume:tick1"));
         assertTrue(wired.resumeRoomSongIfNeeded("join:onResume:tick2"));
-        assertTrue("still nothing opened", opened.isEmpty());
+        assertTrue("still nothing opened", startedActivities().isEmpty());
 
         relaunchIntoJoinScreen();
         assertFalse(wired.resumeRoomSongIfNeeded("join:onResume:tick3"));
         assertEquals(V2, presenter.getVideo().videoId);
-        assertEquals(java.util.Arrays.asList(V2), opened);
+        assertEquals(Arrays.asList(Activity.class.getName()), startedActivities());
     }
 
-    // ---- build 2469: the 2468 gazebo c1/c2 failures ----
-    // Relaunching the join screen logged nothing at all (c1) or a single stale
-    // in-flight marker line (c2) and no player ever started: silent decision
-    // branches and stale reopen counters from before the engine release.
-
-    /** Restores the observed pre-2469 stale reopen-counter state via reflection. */
-    private void makeReopenCountersStale() throws Exception {
-        Field reopenVideoId = JukeboxRoomController.class.getDeclaredField("mReopenVideoId");
-        reopenVideoId.setAccessible(true);
-        reopenVideoId.set(wired, V1);
-        Field attempts = JukeboxRoomController.class.getDeclaredField("mReopenAttempts");
-        attempts.setAccessible(true);
-        attempts.setInt(wired, 2); // MAX_REOPEN_ATTEMPTS: the cap
-        Field requested = JukeboxRoomController.class.getDeclaredField("mRequestedVideoId");
-        requested.setAccessible(true);
-        requested.set(wired, V1);
-        Field capLogged = JukeboxRoomController.class.getDeclaredField("mCapLoggedVideoId");
-        capLogged.setAccessible(true);
-        capLogged.set(wired, V1); // the cap log is suppressed for this song, too
-    }
+    // ---- build 2469: stale reopen cap must not survive the engine release ----
 
     @Test
-    public void staleReopenCountersAfterEngineReleaseDoNotBlockTheReentryResume() throws Exception {
+    public void staleReopenCountersAfterEngineReleaseDoNotBlockTheReentryResume() {
+        // Two mismatched loads exhaust the reopen cap while the engine is live.
+        JukeboxForeground.setTestOverride(true);
+        wired.onVideoLoaded(Video.from(V2));
+        wired.onVideoLoaded(Video.from(V2));
+        assertEquals("the cap allows two reopens of the room song",
+                Arrays.asList(Activity.class.getName(), Activity.class.getName()),
+                startedActivities());
+        wired.onVideoLoaded(Video.from(V2));
+        assertTrue("a third mismatch does not open again", startedActivities().isEmpty());
+
+        // Home releases the engine. The cap belongs to that engine and must
+        // not block the relaunch.
         goHomeAndReleaseEngine();
-        makeReopenCountersStale();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertTrue(startedActivities().isEmpty());
         relaunchIntoJoinScreen();
 
         boolean keepAsking = wired.resumeRoomSongIfNeeded("join:onResume:tick1");
 
         assertFalse("the open dispatched: the retry loop must stop asking", keepAsking);
-        assertEquals("the exact room song must be reopened despite stale counters",
+        assertEquals("the exact room song must be reopened despite the old cap",
                 V1, presenter.getVideo().videoId);
-        assertEquals("exactly one open, not one per tick", java.util.Arrays.asList(V1), opened);
-        assertTrue("the reopen must be logged",
-                logged("JukeboxPopup", "room song active but player idle"));
-        assertEquals("the stale cap must be gone: this was a fresh first attempt",
-                1, reopenAttempts());
+        assertEquals("exactly one open, not one per tick",
+                Arrays.asList(Activity.class.getName()), startedActivities());
     }
 
     @Test
-    public void resumeAskWithoutAnActiveRoomLogsTheDecisionInsteadOfReturningSilently() throws Exception {
+    public void resumeAskWithoutAnActiveRoomLogsTheDecisionInsteadOfReturningSilently() {
         room.stop(); // the room is gone: nothing can be resumed
 
         boolean keepAsking = wired.resumeRoomSongIfNeeded("join:onResume:tick1");
 
         assertFalse("an inactive room is terminal: the retry loop must stop asking", keepAsking);
-        assertTrue("the decision must be logged (no silent returns)",
-                logged("JukeboxPopup", "resume skipped: room inactive"));
-        assertTrue("nothing may open without a room", opened.isEmpty());
+        assertTrue("nothing may open without a room", startedActivities().isEmpty());
     }
 
     @Test
-    public void everyReentryAskDecisionIsLoggedWithItsVia() throws Exception {
+    public void everyReentryAskDecisionIsLoggedWithItsVia() {
         relaunchIntoJoinScreen();
 
-        // The song is loaded in a live player (setUp): the ask must log the
-        // skip WITH its via tag — never silently.
+        // The song is loaded in a live player (setUp): asking again must not
+        // open it a second time.
         boolean keepAsking = wired.resumeRoomSongIfNeeded("join:onResume:tick1");
 
         assertFalse(keepAsking);
-        assertTrue("the skip decision must carry the via tag",
-                logged("JukeboxPopup", "(via join:onResume:tick1)"));
-        assertTrue("nothing re-opened while the song plays",
-                opened.isEmpty());
-    }
-
-    /** The controller's reopen-attempt counter, read via reflection (private state). */
-    private int reopenAttempts() throws Exception {
-        Field field = JukeboxRoomController.class.getDeclaredField("mReopenAttempts");
-        field.setAccessible(true);
-        return field.getInt(wired);
+        assertTrue("nothing re-opened while the song plays", startedActivities().isEmpty());
     }
 }

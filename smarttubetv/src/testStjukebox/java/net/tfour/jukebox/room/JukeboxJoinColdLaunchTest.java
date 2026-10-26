@@ -53,7 +53,7 @@ import static org.junit.Assert.assertTrue;
  * does not move focus again.
  */
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk = 28)
+@Config(sdk = 28, qualifiers = "w960dp-h540dp-land-television-xhdpi")
 public class JukeboxJoinColdLaunchTest {
     /** Valid 11-character id. The state title is the Nina 2481 song. */
     static final String V1 = "TNWhiskey01";
