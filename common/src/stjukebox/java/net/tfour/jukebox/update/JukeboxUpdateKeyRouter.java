@@ -48,6 +48,8 @@ public class JukeboxUpdateKeyRouter implements Window.Callback {
 
     private final Activity mActivity;
     private final Window.Callback mDelegate;
+    /** True after THIS router consumed the install key's ACTION_DOWN (build 2475 item 5). */
+    private boolean mConsumedInstallDown;
 
     private JukeboxUpdateKeyRouter(Activity activity, Window.Callback delegate) {
         mActivity = activity;
@@ -123,12 +125,18 @@ public class JukeboxUpdateKeyRouter implements Window.Callback {
         }
         int keyCode = event.getKeyCode();
         if (isInstallKey(keyCode)) {
-            if (action == KeyEvent.ACTION_UP) {
-                JukeboxLog.i(JukeboxUpdate.LOG_TAG, "key routed to the update card: "
-                        + KeyEvent.keyCodeToString(keyCode) + " = install");
-                card.invokeInstall();
+            if (action == KeyEvent.ACTION_DOWN) {
+                mConsumedInstallDown = true;
+                return true; // consume DOWN
             }
-            return true; // consume DOWN and UP
+            if (!mConsumedInstallDown) {
+                return false; // UP whose DOWN this router never consumed: pass through
+            }
+            mConsumedInstallDown = false;
+            JukeboxLog.i(JukeboxUpdate.LOG_TAG, "key routed to the update card: "
+                    + KeyEvent.keyCodeToString(keyCode) + " = install");
+            card.invokeInstall();
+            return true;
         }
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             if (action == KeyEvent.ACTION_UP) {
