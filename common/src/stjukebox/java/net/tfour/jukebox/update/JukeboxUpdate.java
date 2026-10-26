@@ -112,11 +112,17 @@ public class JukeboxUpdate {
                 @Override
                 public void onActivityResumed(Activity activity) {
                     update.mResumedActivity = activity;
+                    // Build 2473, issue #5 (bug 1): the app-wide key routing for
+                    // the update card — OK = install, BACK = dismiss while the
+                    // card is visible, byte-for-byte pass-through otherwise.
+                    JukeboxUpdateKeyRouter.attach(activity);
                 }
 
                 @Override
                 public void onActivityPaused(Activity activity) {
                     // NOP: a pause must never read as backgrounded (see JukeboxForeground).
+                    // The key router of the paused activity is removed in its stop.
+                    JukeboxUpdateKeyRouter.detach(activity);
                 }
 
                 @Override
@@ -131,6 +137,7 @@ public class JukeboxUpdate {
 
                 @Override
                 public void onActivityDestroyed(Activity activity) {
+                    JukeboxUpdateKeyRouter.detach(activity);
                     synchronized (update) {
                         update.mStartedActivities.remove(activity);
                     }
@@ -150,12 +157,20 @@ public class JukeboxUpdate {
     }
 
     /**
-     * The app came to the foreground: log the trigger, then run the gated,
-     * debounced manifest check. Public so tests (in the room fixture package)
-     * can drive it directly; production enters via the lifecycle callbacks.
+     * The app came to the foreground: log the trigger, complete a deferred
+     * install (a download that finished while the app was backgrounded,
+     * issue #5), then run the gated, debounced manifest check. Public so
+     * tests (in the room fixture package) can drive it directly; production
+     * enters via the lifecycle callbacks.
      */
     public void onForegroundTransition(String via) {
         JukeboxLog.i(LOG_TAG, "foreground trigger (" + via + ")");
+        JukeboxUpdatePresenter presenter = mPresenter;
+        if (presenter != null) {
+            // Build 2473, issue #5: keep the apk downloaded while backgrounded
+            // and offer the install again now that the app is foreground.
+            presenter.onAppForeground();
+        }
         maybeCheck("foreground transition (" + via + ")");
     }
 

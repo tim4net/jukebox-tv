@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- Build 2473, issue #5 (bug 2): the stjukebox flavor's self-update
+             downloads the manifest downloadUrl itself into internal
+             cacheDir/jukebox-update/ (the upstream cache/update.apk is never
+             used) and hands it to the package installer as a content URI
+             (FLAG_GRANT_READ_URI_PERMISSION) via this provider. -->
+        <provider
+            android:name="net.tfour.jukebox.update.JukeboxUpdateFileProvider"
+            android:authorities="${applicationId}.jukeboxupdate"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/jukebox_update_paths" />
+        </provider>
+    </application>
+</manifest>

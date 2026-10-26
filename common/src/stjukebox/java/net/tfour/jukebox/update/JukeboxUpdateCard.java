@@ -56,9 +56,43 @@ public class JukeboxUpdateCard extends LinearLayout {
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private Activity mActivity;
+    private Install mInstall;
+    private TextView mText;
 
     private JukeboxUpdateCard(Context context) {
         super(context);
+    }
+
+    /** Runs the install action the card was shown with (never null-safe-crashes). */
+    void invokeInstall() {
+        Install install = mInstall;
+        if (install != null) {
+            install.install();
+        }
+    }
+
+    /**
+     * Replaces the card's text (download progress / failure message), if the
+     * card is currently shown on the given activity. Idempotent, never crashes.
+     */
+    static void setText(Activity activity, String text) {
+        if (activity == null || activity.getWindow() == null) {
+            return;
+        }
+        View decor = activity.getWindow().getDecorView();
+        if (!(decor instanceof ViewGroup)) {
+            return;
+        }
+        View existing = ((ViewGroup) decor).findViewWithTag(VIEW_TAG);
+        if (!(existing instanceof JukeboxUpdateCard)) {
+            return;
+        }
+        JukeboxUpdateCard card = (JukeboxUpdateCard) existing;
+        if (card.mText != null) {
+            card.mText.setText(text);
+            card.mText.setContentDescription(text);
+            JukeboxLog.i(JukeboxUpdate.LOG_TAG, "prompt text: \"" + text + "\"");
+        }
     }
 
     /**
@@ -93,6 +127,7 @@ public class JukeboxUpdateCard extends LinearLayout {
 
         JukeboxUpdateCard card = new JukeboxUpdateCard(activity);
         card.mActivity = activity;
+        card.mInstall = install;
         card.setTag(VIEW_TAG);
         card.setOrientation(VERTICAL);
         card.setFocusable(true);
@@ -114,6 +149,7 @@ public class JukeboxUpdateCard extends LinearLayout {
         text.setTextSize(TypedValue.COMPLEX_UNIT_SP, isTv(card) ? 18 : 14);
         text.setTypeface(Typeface.DEFAULT_BOLD);
         text.setContentDescription(message);
+        card.mText = text;
         card.addView(text, new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
 
         LinearLayout buttons = new LinearLayout(activity);
@@ -145,8 +181,9 @@ public class JukeboxUpdateCard extends LinearLayout {
         // over a room song; a fresh check re-shows it on the next transition.
         card.mHandler.postDelayed(card::autoHide, AUTO_HIDE_MS);
         JukeboxLog.i(JukeboxUpdate.LOG_TAG, "prompt shown: \"" + message + "\""
-                + " (non-modal corner card on the decor, top-right; DPAD-reachable focusable card,"
-                + " OK = install, auto-hides in " + (AUTO_HIDE_MS / 1000) + "s)");
+                + " (non-modal corner card on the decor, top-right; OK = install, BACK = dismiss"
+                + " (routed app-wide while the card is visible), auto-hides in "
+                + (AUTO_HIDE_MS / 1000) + "s)");
     }
 
     /** Removes the card from the given activity (idempotent) and logs the reason. */
@@ -179,11 +216,14 @@ public class JukeboxUpdateCard extends LinearLayout {
     }
 
     private static String message(Context context, String versionName, int build) {
+        // Build 2473: name the keys that actually reach the card. OK is routed
+        // app-wide while the card is visible (JukeboxUpdateKeyRouter), so the
+        // text must not advertise buttons the player cannot reach.
         StringBuilder sb = new StringBuilder("Jukebox update ").append(versionName);
         if (build > 0) {
             sb.append(" (build ").append(build).append(")");
         }
-        return sb.append(" available \u2014 press OK to install").toString();
+        return sb.append(" \u2014 press OK to install, BACK to dismiss").toString();
     }
 
     private static LinearLayout.LayoutParams buttonLp(JukeboxUpdateCard card, int leftMarginDp) {

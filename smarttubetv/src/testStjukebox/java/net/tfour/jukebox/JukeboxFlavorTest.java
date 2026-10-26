@@ -10,6 +10,8 @@ import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 
 /**
  * Jukebox flavor sanity checks. Lives in src/testStjukebox so it only runs
@@ -30,9 +32,22 @@ public class JukeboxFlavorTest {
 
     @Test
     public void versionCodeIsTheFlavorOverride() throws Exception {
-        // Build 2471: the stjukebox flavor carries its own versionCode on top
+        // Build 2473: the stjukebox flavor carries its own versionCode on top
         // of defaultConfig's 2464, so other flavors stay unaffected.
-        assertEquals(2471, RuntimeEnvironment.getApplication().getPackageManager()
+        assertEquals(2473, RuntimeEnvironment.getApplication().getPackageManager()
                 .getPackageInfo(RuntimeEnvironment.getApplication().getPackageName(), 0).versionCode);
+    }
+
+    @Test
+    public void jukeboxUpdateFileProviderIsDeclared() {
+        // Build 2473: the self-update installer hands the downloaded apk to the
+        // package installer via content://<package>.jukeboxupdate (FLAG_GRANT_
+        // READ_URI_PERMISSION). A missing provider would break every update install.
+        android.content.pm.ProviderInfo provider = RuntimeEnvironment.getApplication()
+                .getPackageManager()
+                .resolveContentProvider(BuildConfig.APPLICATION_ID + ".jukeboxupdate", 0);
+        assertNotNull("the ${applicationId}.jukeboxupdate FileProvider must be merged in",
+                provider);
+        assertFalse("the update apk provider must not be exported", provider.exported);
     }
 }
