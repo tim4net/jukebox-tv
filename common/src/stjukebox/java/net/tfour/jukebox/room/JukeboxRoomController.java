@@ -55,6 +55,20 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     /** {@link SystemClock#uptimeMillis()} when {@link #mLoadingVideoId} was set; 0 while none. */
     private long mLoadingSinceMs;
     /**
+     * True while a room-song resume was deferred because the app went away (a
+     * resume check found the app backgrounded, or the engine was released under
+     * Home/another app). The next foreground-return resume is then allowed to
+     * open even a snapshot-sourced song id (build 2470): the "wait for its own
+     * play" rule only covers a fresh snapshot arriving while the app is in the
+     * foreground — it must never keep a returned app stuck on the join screen
+     * with a silent room (build 2469 gazebo steps 2/3).
+     */
+    private boolean mResumeAfterReturn;
+    /** VideoId of the last playback position this controller reported/observed. */
+    private String mLastPosVideoId;
+    /** Last observed playback position of {@link #mLastPosVideoId} in ms (cheap resume seek hint). */
+    private long mLastPosMs;
+    /**
      * Resume check posted by {@link #onEngineReleased()}: the release can be the
      * last event to reach this controller (see onEngineReleased), so the check
      * must also run afterwards. Cancelled by onNewVideo/onVideoLoaded when a new
@@ -75,12 +89,14 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
                 return;
             }
             JukeboxRoom room = JukeboxRoom.instance(ctx);
-            JukeboxLog.i(LOG_TAG, "pos=" + player.getPositionMs() + "ms player=" + mLoadedVideoId
+            long posMs = player.getPositionMs();
+            JukeboxLog.i(LOG_TAG, "pos=" + posMs + "ms player=" + mLoadedVideoId
                     + " room=" + room.getRoom() + " roomVid=" + room.getCurrentVideoId());
+            rememberProgress(mLoadedVideoId, posMs);
             room.reportProgress(
                     mLoadedVideoId,
                     toSec(player.getDurationMs()),
-                    toSec(player.getPositionMs()));
+                    toSec(posMs));
             if (mHeartbeatRunning) {
                 handler().postDelayed(this, HEARTBEAT_MS);
             }
@@ -148,6 +164,8 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         } else if (roomVideoId.equals(loadedId)) {
             resetReopen();
             mEndedVideoId = null; // the room video is (again) the loaded one
+            mResumeAfterReturn = false; // the room song really plays: no return resume pending
+            rememberProgress(loadedId, player != null ? player.getPositionMs() : -1L);
         } else if (!JukeboxForeground.isAppInForeground()) {
             // Never take over the TV (issue #3): while another app is in use, a
             // mismatched (non-room) video is only paused — enforcement without
@@ -239,6 +257,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         mLoadingVideoId = null;
         mLoadingSinceMs = 0L;
         resetReopen();
+        mResumeAfterReturn = true; // the app went away mid-song: the return resume opens the song
         mLastResumeLog = null; // the next decision may repeat a line: log it fresh
         dismissPopupOverlay();
         // Entering JukeboxJoinActivity mid-song runs its onStart() -> start() ->
@@ -343,8 +362,17 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
 
     /** Pauses whatever is loaded and (re)opens the exact room videoId (bounded by {@link #beginReopen}). */
     private void openRoomVideo(String roomVideoId, String reason) {
+        openRoomVideo(roomVideoId, reason, -1L);
+    }
+
+    /**
+     * Pauses whatever is loaded and (re)opens the exact room videoId (bounded by
+     * {@link #beginReopen}). {@code posMs} (>= 0) becomes the opened video's
+     * pending position — the cheap seek hint for a resume after return (-1: none).
+     */
+    private void openRoomVideo(String roomVideoId, String reason, long posMs) {
         JukeboxLog.i(LOG_TAG, reason + ": opening exact room videoId " + roomVideoId
-                + " (attempt " + mReopenAttempts + ")");
+                + " (attempt " + mReopenAttempts + ", posMs=" + posMs + ")");
         mLastResumeLog = null; // the next decision may repeat a line: log it fresh
         stopHeartbeat();
         mLoadedVideoId = null;
@@ -354,7 +382,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             if (player != null) {
                 player.setPlayWhenReady(false);
             }
-            getPlaybackPresenter().openVideo(roomVideoId);
+            getPlaybackPresenter().openVideo(roomVideoId, false, posMs, false);
         } finally {
             mSuppressReports = false;
             // Drop the in-flight id so a later mismatch can use a remaining
@@ -378,6 +406,9 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
                 mLoadingVideoId = null;
                 mLoadingSinceMs = 0L;
                 resetReopen();
+                // 2470: the launch was held back, so the room song still is not
+                // playing — a later retry must stay allowed to open it.
+                mResumeAfterReturn = true;
             }
         }
     }
@@ -391,9 +422,11 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
      * song id, nothing plays, heartbeats stop and "ended" is never sent: the
      * room queue stalls until a phone skips the song. Bounded by the same
      * {@link #beginReopen} cap as mismatch reopens, never reopens a video whose
-     * "ended" was already reported, never opens a song id that only a "state"
-     * snapshot provided (its "play" message stays the only instruction to open
-     * a video), and never duplicates a load that is still in flight.
+     * "ended" was already reported, never duplicates a load that is still in
+     * flight, and — except for a resume after the app's return (see
+     * {@link #mResumeAfterReturn}) — never opens a song id that only a "state"
+     * snapshot provided while the app is in the foreground (its "play" message
+     * stays the only instruction to open a video).
      *
      * Build 2467 failure this must survive: the in-memory markers
      * ({@link #mLoadedVideoId}/{@link #mLoadingVideoId}) and the presenter's
@@ -450,6 +483,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             if (hasLiveEngine() && mLoadedVideoId.equals(roomVideoId)) {
                 // The room's current song is really loaded in a live player: the
                 // release never happened (or a new engine loaded it again).
+                mResumeAfterReturn = false;
                 logResume(via, "resume skipped: room song "
                         + mLoadedVideoId + " loaded in a live player");
                 return false;
@@ -470,6 +504,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         }
         if (!JukeboxForeground.isAppInForeground()) {
             // The song opens when the user returns; only state has been updated.
+            mResumeAfterReturn = true; // 2470: the return resume may open a snapshot-sourced id, too
             logResume(via, "resume deferred: app backgrounded (song opens on the user's return)");
             return true;
         }
@@ -502,9 +537,23 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             mLoadingSinceMs = 0L;
         }
         if (room.isSongFromState()) {
-            logResume(via, "resume deferred: song id came from a state snapshot,"
-                    + " waiting for its own play");
-            return false; // snapshot-sourced song id: wait for its own "play" message
+            if (via == null && !mResumeAfterReturn) {
+                // Fresh foreground snapshot (initial join / live player): the
+                // song's own "play" message stays the only instruction to open
+                // its video (2466 rule, unchanged).
+                logResume(via, "resume deferred: song id came from a state snapshot,"
+                        + " waiting for its own play");
+                return false;
+            }
+            // 2470 resume-after-return (join screen re-entry/retry ticks, or a
+            // resume that was deferred while the app was backgrounded or over an
+            // engine release): the app is in the foreground now, a room song is
+            // active and nothing live plays it — open it directly instead of
+            // keeping the returned app stuck on the join screen (2469 steps 2/3).
+            logResume(via, "resume after return: opening snapshot-sourced room song " + roomVideoId);
+            mResumeAfterReturn = false;
+        } else {
+            mResumeAfterReturn = false; // play-sourced song: no return resume pending
         }
         if (!beginReopen(roomVideoId)) {
             // Already opening it, or the reopen cap for this song is exhausted.
@@ -516,7 +565,10 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             }
             return false;
         }
-        openRoomVideo(roomVideoId, "room song active but player idle" + viaSuffix(via));
+        // Cheap seek hint (2470): the last position observed/reported for this
+        // exact videoId, so a resumed room song continues where it left off.
+        openRoomVideo(roomVideoId, "room song active but player idle" + viaSuffix(via),
+                pendingPosMs(roomVideoId));
         return false;
     }
 
@@ -536,6 +588,28 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     private boolean isLoadInFlight() {
         long since = mLoadingSinceMs;
         return since != 0L && SystemClock.uptimeMillis() - since <= LOAD_IN_FLIGHT_TIMEOUT_MS;
+    }
+
+    /**
+     * Remembers the last observed playback position of {@code videoId} (>= 0),
+     * so a resume after return can seek the reopened song back to the room's
+     * position (cheap: no protocol round trip — the "state" snapshot carries
+     * no position/startedAt field, so the last locally observed/reported
+     * progress is the only source).
+     */
+    private void rememberProgress(String videoId, long posMs) {
+        if (videoId != null && posMs >= 0) {
+            mLastPosVideoId = videoId;
+            mLastPosMs = posMs;
+        }
+    }
+
+    /** Pending seek position for a resume of {@code videoId}, or -1 when none is known. */
+    private long pendingPosMs(String roomVideoId) {
+        if (roomVideoId != null && roomVideoId.equals(mLastPosVideoId) && mLastPosMs >= 0) {
+            return mLastPosMs;
+        }
+        return -1L;
     }
 
     /**
