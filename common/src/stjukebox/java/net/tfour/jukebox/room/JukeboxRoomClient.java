@@ -1,5 +1,7 @@
 package net.tfour.jukebox.room;
 
+import android.os.SystemClock;
+
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -75,6 +77,12 @@ public class JukeboxRoomClient {
     private static final long INITIAL_BACKOFF_MS = 1_000;
     private static final long MAX_BACKOFF_MS = 30_000;
     private static final int MAX_REMEMBERED_SONGS = 64;
+    /**
+     * A position this close to {@code durationMs} (or past it) is unknown.
+     * Callers must not seek to the end. Same 2s as the web listen-along
+     * drift tolerance.
+     */
+    private static final long END_MARGIN_MS = 2_000L;
 
     private final String mOrigin;
     private final Transport mTransport;
@@ -135,25 +143,17 @@ public class JukeboxRoomClient {
     /** True while the current song id came from a "state" snapshot, not a "play". */
     private volatile boolean mSongFromState;
     /**
-     * Room position of the song the latest "state" snapshot names (issue #6,
-     * cold start): nowPlaying startedAt/paused/pausedAt/durationMs plus the
-     * snapshot's server clock ("now"). All volatile: the estimate is read
-     * without the lock from the Android main thread while the WebSocket
-     * thread writes it. mPosVideoId == null means unknown/idle.
+     * Room position of the song the latest "state" snapshot names (issue #6).
+     * One immutable record behind one volatile: a reader on the Android main
+     * thread never sees one snapshot's video id with another's startedAt or
+     * pausedAt. {@link RoomPosition#NONE} means unknown/idle.
      */
-    private volatile String mPosVideoId;
-    private volatile boolean mPosPaused;
-    private volatile long mPosStartedAtMs;
-    private volatile long mPosPausedAtMs;
-    private volatile long mPosDurationMs;
-    private volatile long mPosServerNowMs;
-    private volatile long mPosReceivedAtMs;
+    private volatile RoomPosition mPosition = RoomPosition.NONE;
     /**
-     * Test-only. Runs while a position record is being published, after the
-     * video id is stored and before the rest of that record. Null in
-     * production, so capture is unchanged. A reader here must still see the
-     * previous complete snapshot (the new video id is not yet visible): one
-     * record, not a mix of two. Reset from the test's {@code @After}.
+     * Test-only. Runs while a position record is being published, before that
+     * record is stored. Null in production. A reader here still sees the
+     * previous complete snapshot (the new video id is not yet visible). Not
+     * invoked on the clear path. Reset from the test's {@code @After}.
      */
     private static volatile Runnable sDuringPositionPublishForTests;
     /** Song ids for which "ended" was already accepted by the socket. */
@@ -324,33 +324,49 @@ public class JukeboxRoomClient {
 
     /**
      * Estimated room playback position of {@code videoId} — the song the latest
-     * "state" snapshot names — computed exactly like the phone/TV web clients:
-     * {@code (paused ? pausedAt : serverNow) - startedAt}, the server clock
-     * advancing with local elapsed time since the snapshot arrived ("song
-     * startedAt / position + server time elapsed"), capped at the song's
-     * durationMs and never negative. A paused room stays frozen at
-     * pausedAt - startedAt. {@code -1} when the position is unknown (no
-     * snapshot, idle room, or a different song): callers keep their usual
-     * behavior then. Lock-free: safe from the Android main thread.
+     * "state" snapshot names. {@code (paused && pausedAt ? pausedAt : serverNow)
+     * - startedAt}. The server clock advances by {@link SystemClock#elapsedRealtime()}
+     * since the snapshot arrived, so a wall-clock step does not move the song.
+     * A paused room stays frozen at pausedAt - startedAt.
+     *
+     * <p>{@code -1} (unknown; callers keep their usual behavior) when there is
+     * no snapshot, the room is idle, the video id does not match, the snapshot
+     * omitted {@code now}, the estimate is negative, or it is at or past
+     * {@code durationMs} minus {@link #END_MARGIN_MS}. Lock-free: one volatile
+     * read, safe from the Android main thread.
      */
     public long roomPositionMs(String videoId) {
-        String posVideoId = mPosVideoId;
-        if (posVideoId == null || videoId == null || !posVideoId.equals(videoId)) {
+        RoomPosition snap = mPosition;
+        if (snap.videoId == null || videoId == null || !snap.videoId.equals(videoId)) {
             return -1L;
         }
-        long startedAtMs = mPosStartedAtMs;
-        if (startedAtMs <= 0) {
+        if (snap.startedAtMs <= 0L || snap.serverNowMs <= 0L) {
+            return -1L; // no startedAt, or the server sent no "now"
+        }
+        long elapsedMs = SystemClock.elapsedRealtime() - snap.receivedAtElapsedMs;
+        if (elapsedMs < 0L) {
+            elapsedMs = 0L;
+        }
+        long serverNowMs = snap.serverNowMs + elapsedMs;
+        long endMs = snap.paused && snap.pausedAtMs > 0L ? snap.pausedAtMs : serverNowMs;
+        long posMs = endMs - snap.startedAtMs;
+        if (posMs < 0L) {
             return -1L;
         }
-        long serverNowMs = mPosServerNowMs > 0
-                ? mPosServerNowMs + Math.max(0L, System.currentTimeMillis() - mPosReceivedAtMs)
-                : System.currentTimeMillis(); // no server clock in the snapshot: local clock
-        long endMs = mPosPaused && mPosPausedAtMs > 0 ? mPosPausedAtMs : serverNowMs;
-        long posMs = endMs - startedAtMs;
-        if (mPosDurationMs > 0 && posMs > mPosDurationMs) {
-            posMs = mPosDurationMs;
+        if (snap.durationMs > 0L && posMs >= snap.durationMs - END_MARGIN_MS) {
+            return -1L; // at or past the end: do not seek there
         }
-        return posMs >= 0 ? posMs : -1L;
+        return posMs;
+    }
+
+    /**
+     * True when the latest position snapshot names {@code videoId} and that
+     * song is paused. A later snapshot that is not paused answers false, so a
+     * view-resume can unpause. Lock-free, same record as {@link #roomPositionMs}.
+     */
+    public boolean isSnapshotPaused(String videoId) {
+        RoomPosition snap = mPosition;
+        return videoId != null && videoId.equals(snap.videoId) && snap.paused;
     }
 
     // Internal machinery. The *Locked helpers below expect the instance lock to be
@@ -571,32 +587,34 @@ public class JukeboxRoomClient {
      * nowPlaying startedAt/paused/pausedAt/durationMs plus the snapshot's own
      * server clock. A snapshot without position data (or an idle room) clears
      * the record — {@link #roomPositionMs(String)} then answers -1 and callers
-     * keep their usual behavior.
+     * keep their usual behavior. The test hook runs before the new record is
+     * visible and is not used on this clear path.
      */
     private void captureRoomPositionLocked(JukeboxProtocol.Message message) {
         if (message.isNowPlayingNull()
                 || !JukeboxProtocol.isValidVideoId(message.getNowPlayingVideoId())
                 || message.getNowPlayingStartedAtMs() == null) {
-            mPosVideoId = null;
-            mPosPaused = false;
-            mPosStartedAtMs = 0L;
-            mPosPausedAtMs = 0L;
-            mPosDurationMs = 0L;
-            mPosServerNowMs = 0L;
-            mPosReceivedAtMs = 0L;
+            clearRoomPositionLocked();
             return;
         }
-        mPosVideoId = message.getNowPlayingVideoId();
+        RoomPosition next = new RoomPosition(
+                message.getNowPlayingVideoId(),
+                message.isNowPlayingPaused(),
+                message.getNowPlayingStartedAtMs(),
+                message.getNowPlayingPausedAtMs() != null ? message.getNowPlayingPausedAtMs() : 0L,
+                message.getNowPlayingDurationMs() != null ? message.getNowPlayingDurationMs() : 0L,
+                message.getServerNowMs() != null ? message.getServerNowMs() : 0L,
+                SystemClock.elapsedRealtime());
         Runnable duringPublish = sDuringPositionPublishForTests;
         if (duringPublish != null) {
             duringPublish.run();
         }
-        mPosPaused = message.isNowPlayingPaused();
-        mPosStartedAtMs = message.getNowPlayingStartedAtMs();
-        mPosPausedAtMs = message.getNowPlayingPausedAtMs() != null ? message.getNowPlayingPausedAtMs() : 0L;
-        mPosDurationMs = message.getNowPlayingDurationMs() != null ? message.getNowPlayingDurationMs() : 0L;
-        mPosServerNowMs = message.getServerNowMs() != null ? message.getServerNowMs() : 0L;
-        mPosReceivedAtMs = System.currentTimeMillis();
+        mPosition = next;
+    }
+
+    /** Drops the position record in one store. No test hook. */
+    private void clearRoomPositionLocked() {
+        mPosition = RoomPosition.NONE;
     }
 
     private void handlePlayLocked(JukeboxProtocol.Message message) {
@@ -689,13 +707,7 @@ public class JukeboxRoomClient {
         mSongFromState = false;
         // The song (and with it any recorded room position) is gone: a later
         // snapshot re-records it. Covers stop()/closed/song-clear paths.
-        mPosVideoId = null;
-        mPosPaused = false;
-        mPosStartedAtMs = 0L;
-        mPosPausedAtMs = 0L;
-        mPosDurationMs = 0L;
-        mPosServerNowMs = 0L;
-        mPosReceivedAtMs = 0L;
+        clearRoomPositionLocked();
     }
 
     private boolean isCurrentSongLocked(String videoId) {
@@ -736,5 +748,34 @@ public class JukeboxRoomClient {
     private void notifyStatusLocked(String status) {
         mLastStatus = status;
         mListener.onStatus(status);
+    }
+
+    /**
+     * One "state" snapshot's position fields. Immutable; published by a single
+     * volatile write so readers cannot mix two snapshots.
+     */
+    private static final class RoomPosition {
+        static final RoomPosition NONE = new RoomPosition(null, false, 0L, 0L, 0L, 0L, 0L);
+
+        final String videoId;
+        final boolean paused;
+        final long startedAtMs;
+        final long pausedAtMs;
+        final long durationMs;
+        /** Epoch ms from the snapshot's {@code now}. 0 when the server omitted it. */
+        final long serverNowMs;
+        /** {@link SystemClock#elapsedRealtime()} when this snapshot was received. */
+        final long receivedAtElapsedMs;
+
+        RoomPosition(String videoId, boolean paused, long startedAtMs, long pausedAtMs,
+                     long durationMs, long serverNowMs, long receivedAtElapsedMs) {
+            this.videoId = videoId;
+            this.paused = paused;
+            this.startedAtMs = startedAtMs;
+            this.pausedAtMs = pausedAtMs;
+            this.durationMs = durationMs;
+            this.serverNowMs = serverNowMs;
+            this.receivedAtElapsedMs = receivedAtElapsedMs;
+        }
     }
 }

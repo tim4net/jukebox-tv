@@ -204,16 +204,24 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             return;
         }
         mLoadedVideoId = loadedId;
+        // A paused snapshot stays paused: do not start playback on load.
+        // ensureRoomSongPlaying is what unpauses, and only once a later
+        // snapshot says the song is playing.
+        boolean holdPaused = room.isSnapshotPaused(loadedId);
         if (player != null) {
-            player.setPlayWhenReady(true);
+            player.setPlayWhenReady(!holdPaused);
         }
         Integer durationSec = player != null ? toSec(player.getDurationMs()) : null;
         if (durationSec == null && item != null && item.getDurationMs() > 0) {
             durationSec = (int) (item.getDurationMs() / 1000);
         }
         Integer positionSec = player != null ? toSec(player.getPositionMs()) : null;
-        room.reportPlaying(loadedId, durationSec, positionSec, "playing");
-        startHeartbeat();
+        room.reportPlaying(loadedId, durationSec, positionSec, holdPaused ? "paused" : "playing");
+        if (holdPaused) {
+            stopHeartbeat();
+        } else {
+            startHeartbeat();
+        }
     }
 
     @Override
@@ -685,6 +693,10 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
      * restore can load it paused (e.g. a saved playWhenReady=false applied on
      * load), which used to require a DPAD_CENTER press. While a room song is
      * active the TV is a listener — the room's song plays.
+     *
+     * <p>A snapshot that is still paused is the host's pause. Leave the player
+     * paused at {@code pausedAt - startedAt}. This method is the unpause: it
+     * runs again on the next view resume, after a snapshot that is not paused.
      */
     private void ensureRoomSongPlaying() {
         if (!JukeboxRoom.isRoomActive() || mSuppressReports) {
@@ -695,9 +707,13 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         if (player == null || ctx == null) {
             return;
         }
-        String roomVideoId = JukeboxRoom.instance(ctx).getCurrentVideoId();
+        JukeboxRoom room = JukeboxRoom.instance(ctx);
+        String roomVideoId = room.getCurrentVideoId();
         if (roomVideoId == null || !roomVideoId.equals(mLoadedVideoId)) {
             return; // nothing loaded, or not the room's song
+        }
+        if (room.isSnapshotPaused(roomVideoId)) {
+            return; // host paused this song; view resume must not unpause it
         }
         if (!player.getPlayWhenReady()) {
             JukeboxLog.i(LOG_TAG, "room song " + roomVideoId + " loaded but paused on view resume: playing");

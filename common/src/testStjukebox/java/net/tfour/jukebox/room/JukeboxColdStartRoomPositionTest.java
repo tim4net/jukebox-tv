@@ -49,7 +49,7 @@ import static org.junit.Assert.assertTrue;
  * <li>cold start "play" opens the room song seeking to the snapshot position
  * (startedAt + server time elapsed), logged;</li>
  * <li>a paused snapshot freezes at pausedAt - startedAt (no drift);</li>
- * <li>the estimate is capped at the song's durationMs;</li>
+ * <li>a position at or past the end margin is unknown (pendingPosMs stays -1);</li>
  * <li>the resume/reopen path (no local position memory) seeks to the room
  * estimate too, not just the play path;</li>
  * <li>unknown position (snapshot without startedAt), a snapshot naming a
@@ -240,11 +240,13 @@ public class JukeboxColdStartRoomPositionTest {
     @Test
     public void snapshotPositionIsCappedAtTheSongDuration() {
         long serverNow = System.currentTimeMillis();
-        // The song is 5 minutes in but only 300s long: never seek past the end.
+        // The song is past durationMs. The estimate is unknown, so the open
+        // does not seek to the end (pendingPosMs stays -1).
         snapshot("s1", V1, serverNow - 400_000L, serverNow, false, null, DURATION_MS);
 
         coldPlay("s1", V1);
-        assertEquals("the estimate must cap at durationMs", DURATION_MS, presenter.getVideo().pendingPosMs);
+        assertEquals("at or past the end is unknown (do not seek to durationMs)",
+                -1L, presenter.getVideo().pendingPosMs);
     }
 
     @Test

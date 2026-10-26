@@ -414,6 +414,19 @@ public final class JukeboxRoom {
         return client.roomPositionMs(videoId);
     }
 
+    /**
+     * True when the latest position snapshot names {@code videoId} and the
+     * host has that song paused. False when unknown, so callers keep forcing
+     * playback. See {@link JukeboxRoomClient#isSnapshotPaused(String)}.
+     */
+    public boolean isSnapshotPaused(String videoId) {
+        JukeboxRoomClient client = mClient;
+        if (client == null || !mActive || videoId == null) {
+            return false;
+        }
+        return client.isSnapshotPaused(videoId);
+    }
+
     /** See {@link JukeboxRoomClient#songEnded(String)}. */
     public void songEnded(String videoId) {
         JukeboxRoomClient client = mClient;
