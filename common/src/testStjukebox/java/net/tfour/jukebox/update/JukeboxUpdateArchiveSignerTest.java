@@ -2,6 +2,8 @@ package net.tfour.jukebox.update;
 
 import android.app.Activity;
 import android.app.Application;
+import android.content.pm.PackageInfo;
+import android.content.pm.Signature;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -9,7 +11,9 @@ import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
+import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
+import org.robolectric.shadows.ShadowPackageManager;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -145,7 +149,72 @@ public class JukeboxUpdateArchiveSignerTest {
         assertEquals("an unsigned archive must yield no signing cert", null, certSha256);
     }
 
+    // ---- Issue #9, items 4/5 (phase 1: failing tests only) ----
+
+    /**
+     * Issue #9, item 4: when PackageManager ALSO returns a cert for the
+     * archive (the v2 block), it must equal the v1 (JarFile) cert — a
+     * GENUINE v1 signature plus a FOREIGN v2 cert must NOT pass. The v1
+     * cert here is the real fixture key's; PackageManager is made to
+     * report a foreign cert for the same archive.
+     */
+    @Test
+    public void foreignPackageManagerArchiveCertIsRefusedDespiteAGenuineV1Signature() throws IOException {
+        File apk = fixtureApk();
+        PackageInfo foreign = new PackageInfo();
+        foreign.packageName = "net.tfour.jukebox";
+        foreign.signatures = new Signature[]{new Signature(new byte[]{7, 7, 7, 7})};
+        ((ShadowPackageManager) Shadows.shadowOf(app.getPackageManager()))
+                .setPackageArchiveInfo(apk.getPath(), foreign);
+
+        String certSha256 = realPresenter().archiveSigningCertSha256(apk.getPath());
+
+        assertEquals("genuine v1 + foreign package-manager cert must be refused"
+                + " (no cert extracted), got " + certSha256, null, certSha256);
+    }
+
+    /**
+     * Issue #9, item 5 (copied cert): a copy of the fixture that KEEPS the
+     * META-INF cert (the .RSA block) but mutates the .SF so its signature no
+     * longer verifies must yield NO trusted cert — the copied cert alone must
+     * never vouch for the archive.
+     */
+    @Test
+    public void copiedCertWithAForgedSignatureYieldsNoTrustedCert() throws IOException {
+        File forged = forgeMetaInfSf(fixtureApk());
+
+        String certSha256 = realPresenter().archiveSigningCertSha256(forged.getPath());
+
+        assertEquals("a copied cert with a forged .SF signature must yield no cert",
+                null, certSha256);
+    }
+
     // ---- helpers: real-zip mutations of the real fixture ----
+
+    /**
+     * Issue #9, item 5: rewrites the zip flipping one byte of the .SF body —
+     * the META-INF cert (.RSA) is kept, but the .SF signature no longer
+     * verifies, exactly a "copied cert / forged signature" archive.
+     */
+    private static File forgeMetaInfSf(File apk) throws IOException {
+        File out = File.createTempFile("jukebox-forged", ".apk", apk.getParentFile());
+        out.deleteOnExit();
+        try (ZipFile zip = new ZipFile(apk);
+             ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(out))) {
+            Enumeration<? extends ZipEntry> entries = zip.entries();
+            while (entries.hasMoreElements()) {
+                ZipEntry entry = entries.nextElement();
+                byte[] content = readFully(zip, entry);
+                if (entry.getName().startsWith("META-INF/") && entry.getName().endsWith(".SF")) {
+                    content[content.length / 2] ^= (byte) 0xA5; // break the signature
+                }
+                zos.putNextEntry(new ZipEntry(entry.getName()));
+                zos.write(content);
+                zos.closeEntry();
+            }
+        }
+        return out;
+    }
 
     /** Rewrites the zip with one byte of the signed AndroidManifest.xml flipped. */
     private static File tamperSignedEntry(File apk) throws IOException {

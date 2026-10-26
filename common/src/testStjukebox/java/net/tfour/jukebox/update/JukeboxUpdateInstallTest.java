@@ -113,7 +113,11 @@ public class JukeboxUpdateInstallTest {
         int installedVersion;
         String archiveCertSha256 = PINNED_CERT_SHA256;
         String installedCertSha256 = PINNED_CERT_SHA256;
+        // Issue #9, item 2 (review rv91): the production manifestApkSha256
+        // runs (its override is GONE); only the manifest fetch is faked.
         String manifestSha256;
+        String manifestJson;
+        IOException manifestJsonFail;
         String fileSha256;
 
         TestPresenter(Context context, CurrentActivity current) {
@@ -164,9 +168,25 @@ public class JukeboxUpdateInstallTest {
             return installedCertSha256;
         }
 
+        /**
+         * Issue #9, item 2 (review rv91): manifestApkSha256 is NO longer
+         * overridden — the production decision (fetch + parse + pin the
+         * offered URL) runs against this faked manifest JSON.
+         */
         @Override
-        protected String manifestApkSha256(String downloadUrl) {
-            return manifestSha256;
+        protected String downloadManifestJson(String manifestUrl) throws IOException {
+            if (manifestJsonFail != null) {
+                throw manifestJsonFail;
+            }
+            if (manifestJson != null) {
+                return manifestJson;
+            }
+            if (manifestSha256 == null) {
+                return null; // absent entry = skip the file hash check
+            }
+            // Shorthand: a manifest pinning the offered URL with that sha256.
+            return "{\"package\":{\"downloadUrl\":\"" + MANIFEST_URL
+                    + "\",\"apkSha256\":\"" + manifestSha256 + "\"}}";
         }
 
         @Override
@@ -524,6 +544,34 @@ public class JukeboxUpdateInstallTest {
         assertEquals("an /install/ url on our host must be downloaded", 1, install.downloader.calls);
     }
 
+    // Issue #9, item 3: only the https default port (-1 / 443) is ever fetched.
+
+    @Test
+    public void explicitNonHttpsPortIsRefusedWithoutDownloading() {
+        TestPresenter presenter =
+                offeredWithMatchingApk("https://jukebox.tfour.net:8443/apk/jukebox-tv.apk");
+
+        presenter.install();
+
+        assertEquals("an explicit port other than 443 must never be downloaded",
+                0, presenter.downloader.calls);
+        assertEquals("a refused download must never launch", 0, presenter.launcher.calls);
+        assertTrue("the refusal must be logged", logged("invalid download url"));
+    }
+
+    @Test
+    public void explicitPort443IsStillDownloaded() {
+        // Guard (must stay green): 443 is the https default — explicit is fine.
+        TestPresenter presenter =
+                offeredWithMatchingApk("https://jukebox.tfour.net:443/install/jukebox-tv.apk");
+
+        presenter.install();
+
+        assertEquals("explicit 443 must be downloaded like the implicit default",
+                1, presenter.downloader.calls);
+        assertEquals(1, presenter.launcher.calls);
+    }
+
     // item 2: signer cert + manifest sha256 verification
 
     @Test
@@ -607,6 +655,99 @@ public class JukeboxUpdateInstallTest {
         presenter.install();
 
         assertEquals(1, presenter.launcher.calls);
+    }
+
+    // Issue #9, item 2 (review rv91): manifestApkSha256 is WIRED in production —
+    // the tests above now drive the REAL production decision through the faked
+    // downloadManifestJson seam (its TestPresenter override is gone). The
+    // manifest's package entry must pin the OFFERED download URL before its
+    // apkSha256 is enforced.
+
+    @Test
+    public void manifestSha256PinnedToADifferentDownloadUrlIsIgnored() {
+        TestPresenter presenter = offeredWithMatchingApk();
+        // The manifest supplies a sha256, but for ANOTHER apk: it must not be
+        // applied to our offered download (mismatched pin = no check, launch).
+        presenter.manifestJson = "{\"package\":{\"downloadUrl\":"
+                + "\"https://jukebox.tfour.net/apk/other-2474.apk\","
+                + "\"apkSha256\":\"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\"}}";
+        presenter.fileSha256 =
+                "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD";
+
+        presenter.install();
+
+        assertEquals("a sha256 pinned to a different URL must be ignored (launch)",
+                1, presenter.launcher.calls);
+    }
+
+    @Test
+    public void unreadableManifestSkipsTheFileHashCheckWithoutCrashing() {
+        TestPresenter presenter = offeredWithMatchingApk();
+        // The manifest fetch itself blows up: skip the hash check, never crash
+        // (the pinned-signer check above still guarded the download).
+        presenter.manifestJsonFail = new IOException("connection reset by peer");
+
+        presenter.install();
+
+        assertEquals("an unreadable manifest must not fail the install", 1,
+                presenter.launcher.calls);
+    }
+
+    @Test
+    public void unparsableManifestJsonSkipsTheFileHashCheck() {
+        TestPresenter presenter = offeredWithMatchingApk();
+        presenter.manifestJson = "this is not the manifest you are looking for";
+
+        presenter.install();
+
+        assertEquals("an unparsable manifest supplies no sha256 (launch)", 1,
+                presenter.launcher.calls);
+    }
+
+    @Test
+    public void manifestSha256FromASoleDownloadUrlListEntryIsHonored() {
+        TestPresenter presenter = offeredWithMatchingApk();
+        // downloadUrlList (the non-abi form) with the single offered URL:
+        // the sha256 is enforced against the downloaded file.
+        presenter.manifestJson = "{\"package\":{\"downloadUrlList\":[\"" + MANIFEST_URL
+                + "\"],\"apkSha256\":"
+                + "\"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\"}}";
+        presenter.fileSha256 =
+                "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD";
+
+        presenter.install();
+
+        assertEquals("a sole downloadUrlList entry pinning the offered URL must be"
+                + " enforced (mismatch refuses)", 0, presenter.launcher.calls);
+        assertFalse(expectedApk().exists());
+    }
+
+    @Test
+    public void ambiguousDownloadUrlListSuppliesNoSha256() {
+        // Pure decision: a list with MORE than one URL cannot pin which apk
+        // the sha256 belongs to — no sha256, no check.
+        String json = "{\"package\":{\"downloadUrlList\":[\"" + MANIFEST_URL
+                + "\",\"https://jukebox.tfour.net/apk/x.apk\"],\"apkSha256\":"
+                + "\"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\"}}";
+        assertNull(JukeboxUpdatePresenter.apkSha256OfManifest(json, MANIFEST_URL,
+                "arm64-v8a"));
+    }
+
+    @Test
+    public void pureApkSha256OfManifestDecisions() {
+        String sha = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
+        String pinning = "{\"package\":{\"downloadUrl\":\"" + MANIFEST_URL
+                + "\",\"apkSha256\":\"" + sha + "\"}}";
+        assertEquals("the manifest pins the offered URL: its sha256 is used",
+                sha, JukeboxUpdatePresenter.apkSha256OfManifest(
+                        pinning, MANIFEST_URL, "arm64-v8a"));
+        assertNull("no package entry = nothing", JukeboxUpdatePresenter
+                .apkSha256OfManifest("{\"versions\":{}}", MANIFEST_URL, null));
+        assertNull("no downloadUrl match = nothing", JukeboxUpdatePresenter
+                .apkSha256OfManifest(pinning, "https://jukebox.tfour.net/apk/other.apk",
+                        "arm64-v8a"));
+        assertNull("null manifest = nothing", JukeboxUpdatePresenter
+                .apkSha256OfManifest(null, MANIFEST_URL, "arm64-v8a"));
     }
 
     // item 3: downgrade guard
