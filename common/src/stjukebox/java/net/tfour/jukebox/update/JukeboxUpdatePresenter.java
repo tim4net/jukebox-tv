@@ -1,6 +1,7 @@
 package net.tfour.jukebox.update;
 
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
@@ -93,6 +94,15 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
      */
     static final String ALLOW_INSTALLS_CARD_TEXT =
             "Allow Jukebox to install updates, then come back";
+    /**
+     * Build 2477 (issue #5): Fire OS can lack the unknown-apps settings
+     * activity, so the generic security settings are the fallback screen.
+     */
+    static final String SECURITY_FALLBACK_CARD_TEXT =
+            "Turn on 'Apps from Unknown Sources' for Jukebox in Settings > Security, then come back";
+    /** Build 2477 (issue #5): neither settings screen resolves on this device. */
+    static final String BOTH_UNRESOLVABLE_CARD_TEXT =
+            "Allow installs from unknown sources for Jukebox in Settings, then come back";
     /** Log/download progress step sizes. */
     private static final long PROGRESS_BYTES_STEP = 2 * 1024 * 1024; // ~2MB
     private static final int PROGRESS_PERCENT_STEP = 10; // ~10%
@@ -906,7 +916,27 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         JukeboxLog.i(JukeboxUpdate.LOG_TAG, "opening the unknown-apps settings for "
                 + mAppContext.getPackageName() + " (NEW_TASK)");
-        startActivity(settings);
+        try {
+            startActivity(settings);
+        } catch (ActivityNotFoundException unresolvable) {
+            // Build 2477 (issue #5): Fire OS has no unknown-apps settings
+            // activity. Fall back to the generic security settings screen;
+            // the pending install file and the resume-on-return behavior
+            // stay unchanged.
+            JukeboxLog.i(JukeboxUpdate.LOG_TAG,
+                    "unknown-apps settings unresolvable (" + unresolvable.getMessage()
+                            + "): falling back to " + Settings.ACTION_SECURITY_SETTINGS);
+            Intent security = new Intent(Settings.ACTION_SECURITY_SETTINGS);
+            security.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            runOnMain(() -> cardText(SECURITY_FALLBACK_CARD_TEXT));
+            try {
+                startActivity(security);
+            } catch (ActivityNotFoundException alsoUnresolvable) {
+                JukeboxLog.i(JukeboxUpdate.LOG_TAG, "security settings also unresolvable ("
+                        + alsoUnresolvable.getMessage() + "): showing the final instructions");
+                runOnMain(() -> cardText(BOTH_UNRESOLVABLE_CARD_TEXT));
+            }
+        }
     }
 
     /**
