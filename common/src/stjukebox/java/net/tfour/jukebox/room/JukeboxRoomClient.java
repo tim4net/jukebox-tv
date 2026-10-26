@@ -133,7 +133,7 @@ public class JukeboxRoomClient {
     private String mLastStatus;
     private String mCurrentSongId;
     /** True while the current song id came from a "state" snapshot, not a "play". */
-    private boolean mSongFromState;
+    private volatile boolean mSongFromState;
     /** Song ids for which "ended" was already accepted by the socket. */
     private final Set<String> mEndedSentSongIds = new LinkedHashSet<>();
     private String mPendingEndSongId;
@@ -520,14 +520,13 @@ public class JukeboxRoomClient {
             // Otherwise the server already advanced on its own; drop the pending end.
         }
         if (songId.equals(mCurrentSongId)) {
-            if (mSongFromState) {
-                // The id was adopted from a "state" snapshot, not from a "play":
-                // let this play through so the TV actually opens the song.
-                mSongFromState = false;
-            } else {
+            if (!mSongFromState) {
                 return; // deduplicate: never re-open the song that is already current
             }
+            // The id was adopted from a "state" snapshot, not from a "play":
+            // let this play through so the TV actually opens the song.
         }
+        mSongFromState = false; // an accepted "play" always makes the song play-sourced
         mCurrentSongId = songId;
         mCurrentVideoId = message.getVideoId();
         mListener.onPlay(songId, message.getVideoId(), message.getTitle());
@@ -540,21 +539,28 @@ public class JukeboxRoomClient {
      * the live videoId right away. A "play" message stays the only instruction to
      * open a video: while a play-sourced, un-ended song is current the snapshot is
      * ignored (play is authoritative), and the first play for a state-sourced song
-     * still opens the video.
+     * still opens the video. A snapshot for a song that already ended (and was
+     * reported) is never adopted, so it can never be replayed.
      */
     private void adoptStateSongLocked(JukeboxProtocol.Message message) {
-        if (mCurrentSongId != null && !mEndedSentSongIds.contains(mCurrentSongId)) {
-            return; // "play" is authoritative while the current song hasn't ended
-        }
-        String videoId = message.getNowPlayingVideoId();
-        if (JukeboxProtocol.isValidVideoId(videoId)) {
-            mCurrentVideoId = videoId;
+        if (mCurrentSongId != null && !mSongFromState
+                && !mEndedSentSongIds.contains(mCurrentSongId)) {
+            return; // "play" is authoritative while a play-sourced song hasn't ended
         }
         String songId = message.getNowPlayingSongId();
-        if (songId != null && !songId.trim().isEmpty()) {
-            mCurrentSongId = songId;
-            mSongFromState = true;
+        if (songId == null || songId.trim().isEmpty()) {
+            return; // without a songId there is nothing to adopt
         }
+        if (mEndedSentSongIds.contains(songId)) {
+            return; // never re-adopt a song that already ended and was reported
+        }
+        String videoId = message.getNowPlayingVideoId();
+        if (!JukeboxProtocol.isValidVideoId(videoId)) {
+            return; // without the room's exact videoId there is nothing to adopt
+        }
+        mCurrentVideoId = videoId;
+        mCurrentSongId = songId;
+        mSongFromState = true;
     }
 
     private void handleClosedLocked() {

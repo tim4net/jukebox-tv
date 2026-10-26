@@ -8,6 +8,7 @@ import org.robolectric.RobolectricTestRunner;
 import org.robolectric.annotation.Config;
 
 import java.io.IOException;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -95,6 +96,12 @@ public class JukeboxRoomClientTest {
 
     static String play(String songId, String videoId) {
         return "{\"t\":\"play\",\"song\":{\"songId\":\"" + songId + "\",\"videoId\":\"" + videoId + "\",\"title\":\"T " + songId + "\",\"durationMs\":null}}";
+    }
+
+    static String state(String songId, String videoId) {
+        return "{\"t\":\"state\",\"room\":\"room1\",\"nowPlaying\":{\"songId\":\"" + songId
+                + "\",\"videoId\":\"" + videoId + "\",\"title\":\"T " + songId
+                + "\"},\"queue\":[],\"listeners\":1}";
     }
 
     @Before
@@ -419,12 +426,57 @@ public class JukeboxRoomClientTest {
         c.start(); t.open();
         t.msg(play("s1", V1));
         c.songEnded(V1); // "ended" sent for s1; the songId stays current until the next "play"
-        t.msg("{\"t\":\"state\",\"room\":\"room1\",\"nowPlaying\":{\"songId\":\"s2\",\"videoId\":\""
-                + V2 + "\",\"title\":\"Hey\"},\"queue\":[],\"listeners\":1}");
+        t.msg(state("s2", V2));
         assertEquals("an ended song must not block the snapshot's live id", V2, c.getCurrentVideoId());
         assertTrue(c.isSongFromState());
         t.msg(play("s2", V2));
         assertEquals("the state-sourced song's play still opens it", java.util.Arrays.asList(V1, V2), rec.plays);
+        assertFalse(c.isSongFromState());
+    }
+
+    @Test
+    public void songFromStateFieldIsVolatileForLockFreeMainThreadReads() throws Exception {
+        // isSongFromState() is read without the lock from the Android main thread
+        // (JukeboxRoomController.maybeResumeRoomSong) while the room thread writes
+        // the flag: without volatile the read has no happens-before visibility.
+        assertTrue("mSongFromState must be declared volatile",
+                (JukeboxRoomClient.class.getDeclaredField("mSongFromState").getModifiers()
+                        & Modifier.VOLATILE) != 0);
+    }
+
+    @Test
+    public void playForDifferentSongClearsStateFlagAndThenDeduplicates() {
+        c.start(); t.open();
+        t.msg(state("s1", V1)); // snapshot adopts s1 before its play arrives
+        assertTrue(c.isSongFromState());
+        t.msg(play("s2", V2)); // s1 was skipped/replaced: the play is for a DIFFERENT song
+        assertFalse("any accepted play makes the current song play-sourced", c.isSongFromState());
+        assertEquals(java.util.Arrays.asList(V2), rec.plays);
+        t.msg(play("s2", V2)); // reconnect re-delivery of s2: must deduplicate, not restart
+        assertEquals(1, rec.plays.size());
+        assertFalse(c.isSongFromState());
+    }
+
+    @Test
+    public void staleStateAfterEndedDoesNotReadoptEndedSongOrReplayIt() {
+        c.start(); t.open();
+        t.msg(play("s1", V1));
+        c.songEnded(V1); // "ended" sent for s1; the songId stays current until the server advances
+        t.msg(state("s1", V1)); // stale snapshot (in flight before "ended") still on s1
+        assertFalse("a snapshot must never re-flag an already-ended song", c.isSongFromState());
+        t.msg(play("s1", V1)); // re-delivered play for the ended song: must not replay it
+        assertEquals("the ended song must not be reopened", java.util.Arrays.asList(V1), rec.plays);
+    }
+
+    @Test
+    public void newerSnapshotUpdatesStateAdoptedSongBeforeItsPlay() {
+        c.start(); t.open();
+        t.msg(state("s1", V1)); // snapshot #1 adopts s1
+        t.msg(state("s2", V2)); // s1 was skipped before its play: snapshot #2 must win
+        assertEquals("a state-sourced song must not block a newer snapshot", V2, c.getCurrentVideoId());
+        assertTrue(c.isSongFromState());
+        t.msg(play("s2", V2)); // the updated snapshot's song still opens on its own play
+        assertEquals(java.util.Arrays.asList(V2), rec.plays);
         assertFalse(c.isSongFromState());
     }
 }
