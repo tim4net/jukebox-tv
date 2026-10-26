@@ -90,12 +90,22 @@ public final class JukeboxRoom {
                     // Open the video BEFORE notifying the listeners: onStateChanged
                     // runs the controller's resume check, which must already see this
                     // load in flight (onNewVideo) — or it would open the same video a
-                    // second time, cancelling this load. The marker is only dropped
-                    // here when that open did not start a player (app backgrounded
-                    // between the check above and the launch). A player that has
-                    // not attached yet is still a normal pending load.
+                    // second time, cancelling this load. Issue #6 (cold start): seek
+                    // to the room's current position computed from the state snapshot
+                    // (song startedAt + server time elapsed); -1 (unknown) keeps the
+                    // plain start-at-0 open. The marker is only dropped here when that
+                    // open did not start a player (app backgrounded between the check
+                    // above and the launch). A player that has not attached yet is
+                    // still a normal pending load.
                     PlaybackPresenter presenter = PlaybackPresenter.instance(mAppContext);
-                    presenter.openVideo(videoId);
+                    long posMs = getRoomPositionMs(videoId);
+                    if (posMs >= 0) {
+                        JukeboxLog.i(LOG_TAG, "play " + videoId + ": opening at the room position "
+                                + posMs + "ms (snapshot startedAt + server time elapsed)");
+                        presenter.openVideo(videoId, false, posMs, false);
+                    } else {
+                        presenter.openVideo(videoId);
+                    }
                     if (!JukeboxForeground.isAppInForeground()) {
                         JukeboxRoomController controller =
                                 presenter.getController(JukeboxRoomController.class);
@@ -387,6 +397,21 @@ public final class JukeboxRoom {
             return false;
         }
         return client.isSongFromState();
+    }
+
+    /**
+     * Estimated room playback position of {@code videoId} (the current room
+     * song), computed from the latest "state" snapshot (song startedAt/paused
+     * plus the server clock, advancing with elapsed time) — see
+     * {@link JukeboxRoomClient#roomPositionMs(String)}. {@code -1} when
+     * unknown: callers then keep their usual behavior.
+     */
+    public long getRoomPositionMs(String videoId) {
+        JukeboxRoomClient client = mClient;
+        if (client == null || !mActive || videoId == null) {
+            return -1L;
+        }
+        return client.roomPositionMs(videoId);
     }
 
     /** See {@link JukeboxRoomClient#songEnded(String)}. */

@@ -613,9 +613,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     /**
      * Remembers the last observed playback position of {@code videoId} (>= 0),
      * so a resume after return can seek the reopened song back to the room's
-     * position (cheap: no protocol round trip — the "state" snapshot carries
-     * no position/startedAt field, so the last locally observed/reported
-     * progress is the only source).
+     * position (cheap: no protocol round trip).
      */
     private void rememberProgress(String videoId, long posMs) {
         if (videoId != null && posMs >= 0) {
@@ -624,10 +622,23 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         }
     }
 
-    /** Pending seek position for a resume of {@code videoId}, or -1 when none is known. */
+    /**
+     * Pending seek position for a resume of {@code videoId}, or -1 when none is
+     * known. The locally observed/reported position wins (the TV itself was
+     * playing); on a cold start (issue #6) no local memory exists yet, so the
+     * room-state estimate takes over — the "state" snapshot's song startedAt
+     * plus server time elapsed, exactly what the play-path open seeks to.
+     */
     private long pendingPosMs(String roomVideoId) {
-        if (roomVideoId != null && roomVideoId.equals(mLastPosVideoId) && mLastPosMs >= 0) {
+        if (roomVideoId == null) {
+            return -1L;
+        }
+        if (roomVideoId.equals(mLastPosVideoId) && mLastPosMs >= 0) {
             return mLastPosMs;
+        }
+        Context ctx = getContext();
+        if (ctx != null && JukeboxRoom.isRoomActive()) {
+            return JukeboxRoom.instance(ctx).getRoomPositionMs(roomVideoId);
         }
         return -1L;
     }

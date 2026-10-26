@@ -134,6 +134,20 @@ public class JukeboxRoomClient {
     private String mCurrentSongId;
     /** True while the current song id came from a "state" snapshot, not a "play". */
     private volatile boolean mSongFromState;
+    /**
+     * Room position of the song the latest "state" snapshot names (issue #6,
+     * cold start): nowPlaying startedAt/paused/pausedAt/durationMs plus the
+     * snapshot's server clock ("now"). All volatile: the estimate is read
+     * without the lock from the Android main thread while the WebSocket
+     * thread writes it. mPosVideoId == null means unknown/idle.
+     */
+    private volatile String mPosVideoId;
+    private volatile boolean mPosPaused;
+    private volatile long mPosStartedAtMs;
+    private volatile long mPosPausedAtMs;
+    private volatile long mPosDurationMs;
+    private volatile long mPosServerNowMs;
+    private volatile long mPosReceivedAtMs;
     /** Song ids for which "ended" was already accepted by the socket. */
     private final Set<String> mEndedSentSongIds = new LinkedHashSet<>();
     private String mPendingEndSongId;
@@ -291,6 +305,37 @@ public class JukeboxRoomClient {
         return mSongFromState;
     }
 
+    /**
+     * Estimated room playback position of {@code videoId} — the song the latest
+     * "state" snapshot names — computed exactly like the phone/TV web clients:
+     * {@code (paused ? pausedAt : serverNow) - startedAt}, the server clock
+     * advancing with local elapsed time since the snapshot arrived ("song
+     * startedAt / position + server time elapsed"), capped at the song's
+     * durationMs and never negative. A paused room stays frozen at
+     * pausedAt - startedAt. {@code -1} when the position is unknown (no
+     * snapshot, idle room, or a different song): callers keep their usual
+     * behavior then. Lock-free: safe from the Android main thread.
+     */
+    public long roomPositionMs(String videoId) {
+        String posVideoId = mPosVideoId;
+        if (posVideoId == null || videoId == null || !posVideoId.equals(videoId)) {
+            return -1L;
+        }
+        long startedAtMs = mPosStartedAtMs;
+        if (startedAtMs <= 0) {
+            return -1L;
+        }
+        long serverNowMs = mPosServerNowMs > 0
+                ? mPosServerNowMs + Math.max(0L, System.currentTimeMillis() - mPosReceivedAtMs)
+                : System.currentTimeMillis(); // no server clock in the snapshot: local clock
+        long endMs = mPosPaused && mPosPausedAtMs > 0 ? mPosPausedAtMs : serverNowMs;
+        long posMs = endMs - startedAtMs;
+        if (mPosDurationMs > 0 && posMs > mPosDurationMs) {
+            posMs = mPosDurationMs;
+        }
+        return posMs >= 0 ? posMs : -1L;
+    }
+
     // Internal machinery. The *Locked helpers below expect the instance lock to be
     // held; setupRoom() must run WITHOUT the lock (it does blocking HTTP).
 
@@ -445,6 +490,7 @@ public class JukeboxRoomClient {
             handlePlayLocked(message);
         } else if (JukeboxProtocol.TYPE_STATE.equals(type)) {
             logStateMessage(text, message);
+            captureRoomPositionLocked(message);
             if (message.isNowPlayingNull()) {
                 clearSongLocked();
             } else {
@@ -501,6 +547,35 @@ public class JukeboxRoomClient {
         } catch (JSONException e) {
             return null;
         }
+    }
+
+    /**
+     * Records the room position of the song a "state" snapshot names (issue #6):
+     * nowPlaying startedAt/paused/pausedAt/durationMs plus the snapshot's own
+     * server clock. A snapshot without position data (or an idle room) clears
+     * the record — {@link #roomPositionMs(String)} then answers -1 and callers
+     * keep their usual behavior.
+     */
+    private void captureRoomPositionLocked(JukeboxProtocol.Message message) {
+        if (message.isNowPlayingNull()
+                || !JukeboxProtocol.isValidVideoId(message.getNowPlayingVideoId())
+                || message.getNowPlayingStartedAtMs() == null) {
+            mPosVideoId = null;
+            mPosPaused = false;
+            mPosStartedAtMs = 0L;
+            mPosPausedAtMs = 0L;
+            mPosDurationMs = 0L;
+            mPosServerNowMs = 0L;
+            mPosReceivedAtMs = 0L;
+            return;
+        }
+        mPosVideoId = message.getNowPlayingVideoId();
+        mPosPaused = message.isNowPlayingPaused();
+        mPosStartedAtMs = message.getNowPlayingStartedAtMs();
+        mPosPausedAtMs = message.getNowPlayingPausedAtMs() != null ? message.getNowPlayingPausedAtMs() : 0L;
+        mPosDurationMs = message.getNowPlayingDurationMs() != null ? message.getNowPlayingDurationMs() : 0L;
+        mPosServerNowMs = message.getServerNowMs() != null ? message.getServerNowMs() : 0L;
+        mPosReceivedAtMs = System.currentTimeMillis();
     }
 
     private void handlePlayLocked(JukeboxProtocol.Message message) {
@@ -591,6 +666,15 @@ public class JukeboxRoomClient {
         mCurrentSongId = null;
         mCurrentVideoId = null;
         mSongFromState = false;
+        // The song (and with it any recorded room position) is gone: a later
+        // snapshot re-records it. Covers stop()/closed/song-clear paths.
+        mPosVideoId = null;
+        mPosPaused = false;
+        mPosStartedAtMs = 0L;
+        mPosPausedAtMs = 0L;
+        mPosDurationMs = 0L;
+        mPosServerNowMs = 0L;
+        mPosReceivedAtMs = 0L;
     }
 
     private boolean isCurrentSongLocked(String videoId) {
