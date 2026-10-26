@@ -73,7 +73,11 @@ public class JukeboxUpdateKeyRouter implements Window.Callback {
     }
 
     /**
-     * Restores the wrapped callback (NOP when the window is not wrapped).
+     * Restores the wrapped callback. Only unwraps when this router is the
+     * window's OUTERMOST callback: the current callback is checked to BE this
+     * router and only then replaced with the wrapped delegate, so anything
+     * that wrapped the router from above is left in place (never blindly
+     * reset). NOP when the window is not wrapped by this router.
      */
     public static void detach(Activity activity) {
         if (activity == null || activity.getWindow() == null) {

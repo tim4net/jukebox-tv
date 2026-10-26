@@ -243,8 +243,7 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             }
             // Record the manifest facts for the install path, then offer.
             mPresenter.offerFound(latestVersionName, latestVersionNumber, downloadUris[0].toString());
-            JukeboxUpdatePresenter presenter = mPresenter;
-            presenter.onUpdateFound(latestVersionName, changelog, downloadUris[0].toString());
+            mPresenter.onUpdateFound(latestVersionName, changelog, downloadUris[0].toString());
         }
     }
 
@@ -640,12 +639,10 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
     }
 
     private static void delete(File file) {
-        try {
-            if (file != null && file.exists() && !file.delete()) {
-                file.deleteOnExit();
-            }
-        } catch (RuntimeException ignored) {
-            // Nothing to delete (storage gone): nothing we can do.
+        // No RuntimeException swallowing: a delete that blows up propagates to
+        // the caller's own failure handling (logged there), never hidden here.
+        if (file != null && file.exists() && !file.delete()) {
+            file.deleteOnExit();
         }
     }
 

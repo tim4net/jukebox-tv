@@ -121,7 +121,9 @@ public class JukeboxUpdate {
                 @Override
                 public void onActivityPaused(Activity activity) {
                     // NOP: a pause must never read as backgrounded (see JukeboxForeground).
-                    // The key router of the paused activity is removed in its stop.
+                    // The key router of the paused activity is unwrapped HERE, on its
+                    // pause (detach only unwraps when the router is the outermost
+                    // callback — see JukeboxUpdateKeyRouter.detach).
                     JukeboxUpdateKeyRouter.detach(activity);
                 }
 
