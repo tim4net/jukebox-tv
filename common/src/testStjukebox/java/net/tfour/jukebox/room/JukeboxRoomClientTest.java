@@ -401,4 +401,30 @@ public class JukeboxRoomClientTest {
         assertEquals(1, rec.plays.size());
         assertEquals(V1, c.getCurrentVideoId()); // popups still see the live id
     }
+
+    @Test
+    public void adoptedStateSongIsFlaggedUntilItsPlayArrives() {
+        c.start(); t.open();
+        assertFalse(c.isSongFromState());
+        t.msg("{\"t\":\"state\",\"room\":\"room1\",\"nowPlaying\":{\"songId\":\"s1\",\"videoId\":\""
+                + V1 + "\",\"title\":\"Hey\"},\"queue\":[],\"listeners\":1}");
+        assertTrue("snapshot id must be flagged as not-yet-played", c.isSongFromState());
+        t.msg(play("s1", V1));
+        assertFalse("the play cleared the flag", c.isSongFromState());
+        assertEquals(java.util.Arrays.asList(V1), rec.plays);
+    }
+
+    @Test
+    public void stateAfterEndedAdoptsNextSongAndItsPlayStillOpensIt() {
+        c.start(); t.open();
+        t.msg(play("s1", V1));
+        c.songEnded(V1); // "ended" sent for s1; the songId stays current until the next "play"
+        t.msg("{\"t\":\"state\",\"room\":\"room1\",\"nowPlaying\":{\"songId\":\"s2\",\"videoId\":\""
+                + V2 + "\",\"title\":\"Hey\"},\"queue\":[],\"listeners\":1}");
+        assertEquals("an ended song must not block the snapshot's live id", V2, c.getCurrentVideoId());
+        assertTrue(c.isSongFromState());
+        t.msg(play("s2", V2));
+        assertEquals("the state-sourced song's play still opens it", java.util.Arrays.asList(V1, V2), rec.plays);
+        assertFalse(c.isSongFromState());
+    }
 }

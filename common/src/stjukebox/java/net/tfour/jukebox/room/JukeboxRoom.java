@@ -78,10 +78,14 @@ public final class JukeboxRoom {
             JukeboxMode.setSongSet(songId != null && videoId != null);
             mMainHandler.post(() -> {
                 mNowPlaying = title;
+                // Open the video BEFORE notifying the listeners: onStateChanged
+                // runs the controller's resume check, which must already see this
+                // load in flight (onNewVideo) — or it would open the same video a
+                // second time, cancelling this load.
+                PlaybackPresenter.instance(mAppContext).openVideo(videoId);
                 for (Listener listener : mListeners) {
                     listener.onStateChanged(title);
                 }
-                PlaybackPresenter.instance(mAppContext).openVideo(videoId);
             });
         }
 
@@ -349,6 +353,19 @@ public final class JukeboxRoom {
             return null;
         }
         return client.getCurrentVideoId();
+    }
+
+    /**
+     * True while the current song id came from a "state" snapshot, not from a
+     * "play" message: the song's own "play" is still awaited and stays the only
+     * instruction to open its video.
+     */
+    public boolean isSongFromState() {
+        JukeboxRoomClient client = mClient;
+        if (client == null || !mActive) {
+            return false;
+        }
+        return client.isSongFromState();
     }
 
     /** See {@link JukeboxRoomClient#songEnded(String)}. */

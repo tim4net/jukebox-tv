@@ -123,6 +123,17 @@ public class JukeboxRoomTest {
     }
 
     @Test
+    public void songFromStateFlagMirrorsClient() {
+        room.start();
+        t.open();
+        assertFalse(room.isSongFromState());
+        t.msg("{\"t\":\"state\",\"room\":\"room1\",\"nowPlaying\":{\"songId\":\"s1\",\"videoId\":\"dQw4w9WgXcQ\",\"title\":\"Hey\"},\"queue\":[],\"listeners\":1}");
+        assertTrue(room.isSongFromState()); // snapshot id adopted, play still awaited
+        t.msg(JukeboxRoomClientTest.play("s1", "dQw4w9WgXcQ"));
+        assertFalse(room.isSongFromState()); // the play went through
+    }
+
+    @Test
     public void backToBackStartWithAsyncExecutorReusesClientAndSingleStart() {
         // Async executor: posted work runs only when flushed, like the real
         // HandlerThread (onCreate/onStart race their client::start posts).

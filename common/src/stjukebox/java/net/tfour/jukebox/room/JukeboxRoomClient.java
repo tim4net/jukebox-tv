@@ -117,8 +117,9 @@ public class JukeboxRoomClient {
         }
     };
 
-    // mRunning/mConnected/mCurrentVideoId are volatile and read without the lock so
-    // main-thread getters never block on the setup HTTP done under the lock below.
+    // mRunning/mConnected/mCurrentVideoId/mSongFromState are volatile and read
+    // without the lock so main-thread getters never block on the setup HTTP done
+    // under the lock below.
     private volatile boolean mRunning;
     private volatile boolean mConnected;
     private volatile String mCurrentVideoId;
@@ -283,6 +284,11 @@ public class JukeboxRoomClient {
     /** Video id of the song the room currently wants playing, or null. */
     public String getCurrentVideoId() {
         return mCurrentVideoId;
+    }
+
+    /** True while the current song id came from a "state" snapshot, not a "play" (lock-free). */
+    public boolean isSongFromState() {
+        return mSongFromState;
     }
 
     // Internal machinery. The *Locked helpers below expect the instance lock to be
@@ -529,15 +535,16 @@ public class JukeboxRoomClient {
 
     /**
      * A "state" snapshot can arrive before "play" (or the "play" can be deduplicated
-     * on reconnect): while no song is current, record nowPlaying's videoId/songId so
-     * popups/overlay wiring sees the live videoId right away. A "play" message stays
-     * the only instruction to open a video: while a play-sourced song is current the
-     * snapshot is ignored (play is authoritative), and the first play for a
-     * state-sourced song still opens the video.
+     * on reconnect): while no song is current — or the current song already ended and
+     * was reported — record nowPlaying's videoId/songId so popups/overlay wiring sees
+     * the live videoId right away. A "play" message stays the only instruction to
+     * open a video: while a play-sourced, un-ended song is current the snapshot is
+     * ignored (play is authoritative), and the first play for a state-sourced song
+     * still opens the video.
      */
     private void adoptStateSongLocked(JukeboxProtocol.Message message) {
-        if (mCurrentSongId != null) {
-            return; // "play" is authoritative while a song is current
+        if (mCurrentSongId != null && !mEndedSentSongIds.contains(mCurrentSongId)) {
+            return; // "play" is authoritative while the current song hasn't ended
         }
         String videoId = message.getNowPlayingVideoId();
         if (JukeboxProtocol.isValidVideoId(videoId)) {

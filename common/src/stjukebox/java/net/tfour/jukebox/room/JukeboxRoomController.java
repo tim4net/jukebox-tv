@@ -37,6 +37,15 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     private int mReopenAttempts;
     /** Room videoId whose "ended" was already reported; never auto-reopened. */
     private String mEndedVideoId;
+    /** VideoId whose load is in flight (seen in onNewVideo, not yet onVideoLoaded). */
+    private String mLoadingVideoId;
+    /**
+     * Resume check posted by {@link #onEngineReleased()}: the release can be the
+     * last event to reach this controller (see onEngineReleased), so the check
+     * must also run afterwards. Cancelled by onNewVideo/onVideoLoaded when a new
+     * load makes it moot.
+     */
+    private final Runnable mResumeCheck = this::maybeResumeRoomSong;
 
     private final Runnable mHeartbeat = new Runnable() {
         @Override
@@ -83,7 +92,22 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     }
 
     @Override
+    public void onNewVideo(Video item) {
+        // openVideo() started a load: track it as in flight. player.getVideo()/
+        // getVideo() keep the previous song's id long after its engine was
+        // released, so they cannot tell "already loading the room video" from
+        // "stale id of the released song" — only this can. Also drop a resume
+        // check posted by onEngineReleased(): a new load is on its way.
+        mLoadingVideoId = item != null ? item.videoId : null;
+        handler().removeCallbacks(mResumeCheck);
+    }
+
+    @Override
     public void onVideoLoaded(Video item) {
+        // The in-flight load finished (mLoadingVideoId must not survive into the
+        // next idle period), and a posted resume check is moot now.
+        mLoadingVideoId = null;
+        handler().removeCallbacks(mResumeCheck);
         updatePopupOverlay();
         if (!JukeboxRoom.isRoomActive()) {
             return;
@@ -173,14 +197,23 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             JukeboxRoom.instance(getContext()).songEnded(video.videoId);
         }
         mLoadedVideoId = null;
+        mLoadingVideoId = null;
     }
 
     @Override
     public void onEngineReleased() {
         stopHeartbeat();
         mLoadedVideoId = null;
+        mLoadingVideoId = null;
         resetReopen();
         dismissPopupOverlay();
+        // Entering JukeboxJoinActivity mid-song runs its onStart() -> start() ->
+        // notifyRebind() BEFORE ActivityThread dispatches PlaybackActivity.onStop()
+        // -> this callback, so the earlier resume checks all saw a non-null
+        // mLoadedVideoId and did nothing. Re-run the check once the release has
+        // settled; onNewVideo/onVideoLoaded cancel it when a load makes it moot.
+        handler().removeCallbacks(mResumeCheck);
+        handler().post(mResumeCheck);
     }
 
     @Override
@@ -298,11 +331,13 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     /**
      * Re-opens the room's current song when the player sits idle while a song is
      * active — e.g. the engine was released by re-entering the join screen
-     * mid-song, or the process re-attached via a "state" snapshot. Without this the
-     * client keeps the (deduplicated) song id, nothing plays, heartbeats stop and
-     * "ended" is never sent: the room queue stalls until a phone skips the song.
-     * Bounded by the same {@link #beginReopen} cap as mismatch reopens, and never
-     * reopens a video whose "ended" was already reported.
+     * mid-song. Without this the client keeps the (deduplicated) song id, nothing
+     * plays, heartbeats stop and "ended" is never sent: the room queue stalls
+     * until a phone skips the song. Bounded by the same {@link #beginReopen} cap
+     * as mismatch reopens, never reopens a video whose "ended" was already
+     * reported, never opens a song id that only a "state" snapshot provided (its
+     * "play" message stays the only instruction to open a video), and never
+     * duplicates a load that is still in flight.
      */
     private void maybeResumeRoomSong() {
         if (!JukeboxRoom.isRoomActive() || mSuppressReports || mLoadedVideoId != null) {
@@ -318,10 +353,11 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         if (roomVideoId == null || roomVideoId.equals(mEndedVideoId)) {
             return; // idle room, or the song already ended and was reported
         }
-        Video current = player.getVideo() != null ? player.getVideo() : getVideo();
-        String loadedId = current != null ? current.videoId : null;
-        if (roomVideoId.equals(loadedId)) {
+        if (roomVideoId.equals(mLoadingVideoId)) {
             return; // the engine (re)load of the room video is already on its way
+        }
+        if (room.isSongFromState()) {
+            return; // snapshot-sourced song id: wait for its own "play" message
         }
         if (!beginReopen(roomVideoId)) {
             return; // already opening it, or the reopen cap for this song is exhausted

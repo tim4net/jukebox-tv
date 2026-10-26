@@ -5,6 +5,7 @@ import android.os.HandlerThread;
 import android.os.Looper;
 
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
+import com.liskovsoft.smartyoutubetv2.common.app.models.playback.BasePlayerController;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.JukeboxMode;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.PlaybackPresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.views.PlaybackView;
@@ -16,6 +17,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
+import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 
 import java.lang.ref.WeakReference;
@@ -36,8 +38,11 @@ import static org.junit.Assert.assertTrue;
  * {@link JukeboxRoom} driven by the fake transport/http/scheduler (no network):
  * a mismatched video is reopened as the room's exact id (bounded), a mismatch is
  * never allowed to keep playing once the cap is reached (it is paused), and an
- * idle player while a song is active reopens the song — except after "ended",
- * which must never replay. The player view is a recording dynamic proxy.
+ * idle player while a song is active reopens the song — triggered by a room
+ * event or by the engine release itself — except after "ended", which must never
+ * replay. Each song is opened exactly once: a "play" message's resume check
+ * never duplicates the load it just started, and a "state" snapshot alone never
+ * opens a video (its "play" does). The player view is a recording dynamic proxy.
  */
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 28)
@@ -166,10 +171,100 @@ public class JukeboxRoomControllerTest {
 
     @Test
     public void idlePlayerWhileSongActiveReopensRoomSong() throws Exception {
+        // Like production after a mid-song engine release: neither the player view
+        // nor the presenter clears its video, so both still hold the released
+        // song V1 itself — and V1 must still be reopened (not treated as "on its
+        // way": only an in-flight openVideo, tracked via onNewVideo, is). The
+        // pause-then-open marker proves the reopen actually ran.
+        setPresenterVideo(Video.from(V1));
+        playerCalls.clear();
         controller.onEngineReleased(); // player released mid-song (e.g. join screen)
-        setPresenterVideo(Video.from(V2)); // the released view still holds a stale video
         controller.onStateChanged("Hey"); // any room event triggers the resume check
         assertEquals("the exact room videoId must be reopened", V1, presenter.getVideo().videoId);
+        assertTrue("the reopen must pause the player first: " + playerCalls,
+                playerCalls.contains("setPlayWhenReady:[false]"));
+    }
+
+    @Test
+    public void engineReleaseAloneSchedulesTheRoomSongResume() throws Exception {
+        // Entering the join screen mid-song: its onStart() notifications run
+        // BEFORE PlaybackActivity.onStop() dispatches onEngineReleased(), so no
+        // room event follows the release. The release itself must schedule the
+        // resume check.
+        setPresenterVideo(Video.from(V1)); // the released view still holds V1
+        new Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null); // drop the setUp "play" posting
+        controller.onEngineReleased();
+        Shadows.shadowOf(Looper.getMainLooper()).idle(); // run the posted resume check
+        assertEquals("engine release alone must reopen the room song", V1, presenter.getVideo().videoId);
+        assertTrue("the reopen must pause the released player first: " + playerCalls,
+                playerCalls.contains("setPlayWhenReady:[false]"));
+    }
+
+    @Test
+    public void playForNextSongAfterEndedOpensItExactlyOnce() throws Exception {
+        JukeboxRoomController wired = presenter.getController(JukeboxRoomController.class);
+        assertNotNull("the presenter must have registered the jukebox controller", wired);
+        wired.onInit(); // attach to the room like the real playback flow
+        Shadows.shadowOf(Looper.getMainLooper()).idle(); // settle the setUp postings (room/status/play s1)
+
+        setPresenterVideo(Video.from(V1)); // V1 was playing
+        wired.onPlayEnd(); // V1 ended: "ended" sent, loaded and in-flight ids cleared
+        List<String> opened = new ArrayList<>();
+        registerOpenRecorder(opened);
+
+        t.msg(JukeboxRoomClientTest.play("s2", V2)); // the next song's "play"
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals(V2, presenter.getVideo().videoId); // the next song opened...
+        assertEquals(java.util.Arrays.asList(V2), opened); // ...exactly once (no back-to-back duplicate load)
+    }
+
+    @Test
+    public void stateForNextSongAfterEndedWaitsForItsPlayAndOpensOnce() throws Exception {
+        JukeboxRoomController wired = presenter.getController(JukeboxRoomController.class);
+        assertNotNull(wired);
+        wired.onInit();
+        Shadows.shadowOf(Looper.getMainLooper()).idle(); // settle the setUp postings
+
+        setPresenterVideo(Video.from(V1));
+        wired.onPlayEnd(); // s1/V1 ended
+        List<String> opened = new ArrayList<>();
+        registerOpenRecorder(opened);
+
+        // The next song's "state" snapshot arrives before its "play".
+        t.msg("{\"t\":\"state\",\"room\":\"room1\",\"popups\":true,\"nowPlaying\":{\"songId\":\"s2\",\"videoId\":\""
+                + V2 + "\",\"title\":\"Hey\"},\"queue\":[],\"listeners\":1}");
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertEquals("the ended song must not block the snapshot's live id", V2, room.getCurrentVideoId());
+        assertTrue(room.isSongFromState());
+        assertEquals("a snapshot alone must not open the video", V1, presenter.getVideo().videoId);
+        assertTrue(opened.isEmpty());
+
+        t.msg(JukeboxRoomClientTest.play("s2", V2)); // the song's own "play" message
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(V2, presenter.getVideo().videoId);
+        assertEquals(java.util.Arrays.asList(V2), opened); // opened exactly once
+    }
+
+    /**
+     * Registers a listener that records every videoId the presenter dispatches via
+     * onNewVideo — i.e. every openVideo call, which is exactly what duplicate-open
+     * regressions inflate. The list's add() hook requires a BasePlayerController.
+     */
+    private void registerOpenRecorder(final List<String> opened) throws Exception {
+        BasePlayerController recorder = new BasePlayerController() {
+            @Override
+            public void onNewVideo(Video item) {
+                if (item != null) {
+                    opened.add(item.videoId);
+                }
+            }
+        };
+        Field field = PlaybackPresenter.class.getDeclaredField("mEventListeners");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<Object> listeners = (List<Object>) field.get(presenter);
+        listeners.add(recorder);
     }
 
     @Test
