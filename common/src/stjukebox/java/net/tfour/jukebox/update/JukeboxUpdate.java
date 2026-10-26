@@ -144,6 +144,9 @@ public class JukeboxUpdate {
                 @Override
                 public void onActivityDestroyed(Activity activity) {
                     JukeboxUpdateKeyRouter.detach(activity);
+                    // Issue #9: a destroyed activity's card must not stay the
+                    // app-wide visible card (keyed / movable from its dead decor).
+                    JukeboxUpdateCard.onActivityDestroyed(activity);
                     synchronized (update) {
                         update.mStartedActivities.remove(activity);
                     }

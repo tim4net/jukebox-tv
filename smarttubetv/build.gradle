@@ -116,6 +116,11 @@ android {
                 keyAlias = keystoreProperties['keyAlias']
                 keyPassword = keystoreProperties['keyPassword']
             }
+            // Issue #9: keep the v1 (JAR) signing scheme explicitly ON —
+            // API 28 / Fire OS 7 relies on it (minSdk < 24 requires it, and
+            // the stjukebox update verifier reads the v1 signer cert from
+            // META-INF). v2 stays at its enabled default.
+            v1SigningEnabled true
         }
     }
     

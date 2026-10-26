@@ -304,6 +304,35 @@ public class JukeboxUpdateCard extends LinearLayout {
         }
     }
 
+    /**
+     * Issue #9: the activity is destroyed — the ONE visible card must not
+     * stay the app-wide card when it belongs to (was shown on / moved to)
+     * that activity. A dead activity's decor must never keep the card
+     * keyed app-wide: the key router of the CURRENT foreground activity
+     * answers for the visible card wherever it is attached, and
+     * {@link #move(Activity)} would re-attach a dead activity's card to the
+     * next resumed activity. NOP when no card is shown or it belongs to a
+     * different activity.
+     */
+    static void onActivityDestroyed(Activity activity) {
+        if (activity == null) {
+            return;
+        }
+        JukeboxUpdateCard card = sVisibleCard;
+        if (card == null) {
+            return;
+        }
+        boolean belongsToDestroyed = card.mActivity == activity
+                || (activity.getWindow() != null
+                        && card.getParent() == activity.getWindow().getDecorView());
+        if (belongsToDestroyed) {
+            card.mActivity = null;
+            sVisibleCard = null;
+            JukeboxLog.i(JukeboxUpdate.LOG_TAG,
+                    "prompt: the destroyed activity's card is no longer the app-wide visible card");
+        }
+    }
+
     private void autoHide() {
         if (mActivity != null) {
             dismiss(mActivity, "timeout (auto-hidden)");
