@@ -321,6 +321,67 @@ public class JukeboxResumeAfterReleaseTest {
         assertTrue(logged("JukeboxPopup", "in-flight marker " + V1 + " is stale"));
     }
 
+    // ---- issue #8 (2477 bug 3): the in-flight marker vs. cold launch / timeout ----
+
+    /** Restores ONLY a young in-flight marker (no loaded marker) via reflection. */
+    private void makeYoungInFlightMarker() throws Exception {
+        Field loaded = JukeboxRoomController.class.getDeclaredField("mLoadedVideoId");
+        loaded.setAccessible(true);
+        loaded.set(wired, null);
+        Field loading = JukeboxRoomController.class.getDeclaredField("mLoadingVideoId");
+        loading.setAccessible(true);
+        loading.set(wired, V1);
+        setLoadingSince(SystemClock.uptimeMillis()); // young: well within the load timeout
+    }
+
+    @Test
+    public void youngInFlightMarkerWithoutAPlayerClearsAndResumesTheColdLaunch() throws Exception {
+        // Issue #8 (2477): a cold launch has NO player activity at all, so no
+        // onVideoLoaded can ever clear a stranded marker. The resume must not
+        // skip on it — no matter how young it is.
+        presenter.setView(null); // cold launch: no player view/activity exists
+        relaunchIntoJoinScreen();
+        makeYoungInFlightMarker();
+
+        boolean keepAsking = wired.resumeRoomSongIfNeeded("join:onResume:tick1");
+
+        assertFalse("the open dispatched: the retry loop must stop asking", keepAsking);
+        assertEquals("a stranded young marker must not block the cold-launch resume",
+                V1, presenter.getVideo().videoId);
+        assertEquals("exactly one open, not one per tick", java.util.Arrays.asList(V1), opened);
+        assertTrue("the stale-marker decision must be logged",
+                logged("JukeboxPopup", "in-flight marker " + V1 + " is stale"));
+        assertTrue("the no-holder reason must be logged",
+                logged("JukeboxPopup", "the player/activity that started it is gone"));
+    }
+
+    @Test
+    public void youngInFlightMarkerWithALivePlayerDefersUntilTheLoadTimeoutClearsIt() throws Exception {
+        // A young in-flight load started by a LIVE player may still settle
+        // (onVideoLoaded): the resume must defer to it and open nothing...
+        relaunchIntoJoinScreen();
+        makeYoungInFlightMarker(); // setUp's player view is alive, engine live
+
+        boolean keepAsking = wired.resumeRoomSongIfNeeded("join:onResume:tick1");
+
+        assertFalse("a young in-flight load in a live player must defer the resume", keepAsking);
+        assertTrue("nothing may open while the load is in flight: " + opened, opened.isEmpty());
+        assertTrue(logged("JukeboxPopup", "load of " + V1 + " in flight"));
+
+        // ...but only until the load timeout: a load that never settles (e.g. a
+        // very slow network) is a stale marker afterwards, and the room song
+        // must open (timeout boundary: older than LOAD_IN_FLIGHT_TIMEOUT_MS).
+        setLoadingSince(SystemClock.uptimeMillis() - 9_000);
+        keepAsking = wired.resumeRoomSongIfNeeded("join:onResume:tick2");
+
+        assertFalse("the open dispatched: the retry loop must stop asking", keepAsking);
+        assertEquals("a load older than the timeout must not block the resume",
+                V1, presenter.getVideo().videoId);
+        assertEquals(java.util.Arrays.asList(V1), opened);
+        assertTrue("the timeout reason must be logged",
+                logged("JukeboxPopup", "no load finished within 8000ms"));
+    }
+
     // ---- requirement (2): song change held back while backgrounded ----
 
     @Test
