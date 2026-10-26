@@ -35,7 +35,9 @@ import java.util.List;
  * <li>OK (DPAD_CENTER / ENTER) = install — consumed on DOWN and UP, the
  *     action runs on UP (click semantics, so key repeat cannot re-run
  *     it);</li>
- * <li>BACK = dismiss (hidden until the next foreground transition).</li>
+ * <li>BACK = dismiss (hidden until the next foreground transition), consumed
+ *     by the CURRENT foreground activity's router wherever the card is
+ *     attached (Nina's 2473 gazebo (b)).</li>
  * </ul>
  *
  * While the card is NOT visible — and for every key that is not the card's
@@ -108,6 +110,21 @@ public class JukeboxUpdateKeyRouter implements Window.Callback {
         return (JukeboxUpdateCard) card;
     }
 
+    /**
+     * Build 2473 gazebo (b): the card this router must answer for — the
+     * app-wide visible card WHEREVER it is attached (usually this router's
+     * own activity's decor, but the 2473 gazebo left it on the OLD activity's
+     * decor, and BACK in the then-current foreground activity had to dismiss
+     * it there), falling back to this activity's own decor.
+     */
+    private JukeboxUpdateCard cardToAnswerFor() {
+        JukeboxUpdateCard shown = JukeboxUpdateCard.shownCard();
+        if (shown != null) {
+            return shown;
+        }
+        return visibleCard(mActivity);
+    }
+
     /** True for the OK key family the card answers to (the remote OK is DPAD_CENTER). */
     static boolean isInstallKey(int keyCode) {
         return keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER;
@@ -123,7 +140,7 @@ public class JukeboxUpdateKeyRouter implements Window.Callback {
         if (action != KeyEvent.ACTION_DOWN && action != KeyEvent.ACTION_UP) {
             return false;
         }
-        JukeboxUpdateCard card = visibleCard(mActivity);
+        JukeboxUpdateCard card = cardToAnswerFor();
         if (card == null) {
             return false; // not visible: byte-for-byte unchanged behavior
         }
@@ -146,7 +163,9 @@ public class JukeboxUpdateKeyRouter implements Window.Callback {
             if (action == KeyEvent.ACTION_UP) {
                 JukeboxLog.i(JukeboxUpdate.LOG_TAG,
                         "key routed to the update card: BACK = dismiss");
-                JukeboxUpdateCard.dismiss(mActivity, "dismissed (BACK while the update card was shown)");
+                // Gazebo (b): dismiss wherever the card is attached (not
+                // necessarily this router's own activity's decor).
+                card.dismissAttached("dismissed (BACK while the update card was shown)");
             }
             return true; // consume DOWN and UP
         }

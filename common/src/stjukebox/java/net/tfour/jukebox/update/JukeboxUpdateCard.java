@@ -59,6 +59,15 @@ public class JukeboxUpdateCard extends LinearLayout {
     private Install mInstall;
     private TextView mText;
 
+    /**
+     * Build 2473 gazebo (a)/(b): the ONE card currently shown, wherever it is
+     * attached (an activity's decor), or null. Tracked so (a) the app
+     * lifecycle can MOVE it to the newly resumed foreground activity
+     * ({@link #move(Activity)}) and (b) the key router of the CURRENT
+     * foreground activity can dismiss/consume for it wherever it is.
+     */
+    private static volatile JukeboxUpdateCard sVisibleCard;
+
     private JukeboxUpdateCard(Context context) {
         super(context);
     }
@@ -177,6 +186,7 @@ public class JukeboxUpdateCard extends LinearLayout {
         lp.setMarginEnd(dp(card, 24));
         frame.addView(card, lp);
         card.bringToFront();
+        sVisibleCard = card;
         // Auto-hide: the card disappears on its own so it can never linger
         // over a room song; a fresh check re-shows it on the next transition.
         card.mHandler.postDelayed(card::autoHide, AUTO_HIDE_MS);
@@ -204,9 +214,94 @@ public class JukeboxUpdateCard extends LinearLayout {
             JukeboxUpdateCard card = (JukeboxUpdateCard) existing;
             card.mHandler.removeCallbacksAndMessages(null);
             card.mActivity = null;
+            if (sVisibleCard == card) {
+                sVisibleCard = null;
+            }
         }
         frame.removeView(existing);
         JukeboxLog.i(JukeboxUpdate.LOG_TAG, "prompt " + reason);
+    }
+
+    /**
+     * The card currently shown on SOME activity's decor, or null (build 2473
+     * gazebo (a)/(b)): the app-wide ONE visible card — the key router of the
+     * CURRENT foreground activity answers for it wherever it is attached.
+     */
+    static JukeboxUpdateCard shownCard() {
+        JukeboxUpdateCard card = sVisibleCard;
+        if (card != null && card.getParent() != null) {
+            return card;
+        }
+        return null;
+    }
+
+    /**
+     * Build 2473 gazebo (a): moves the visible card to the given newly
+     * RESUMED foreground activity's decor. Called from JukeboxUpdate's
+     * onActivityResumed, so a card shown on one activity (e.g. the join
+     * screen just before the player launched) is re-drawn — and keyed — on
+     * the activity that is actually in the foreground now, instead of being
+     * left on the old activity's decor (never drawn, never keyed). NOP when
+     * no card is shown or it is already on the resumed activity.
+     */
+    static void move(Activity activity) {
+        JukeboxUpdateCard card = sVisibleCard;
+        if (card == null) {
+            return; // nothing shown: nothing to move
+        }
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()
+                || activity.getWindow() == null) {
+            return;
+        }
+        if (!JukeboxForeground.isAppInForeground()) {
+            return; // issue #3: never touch anything while the app is backgrounded
+        }
+        View decor = activity.getWindow().getDecorView();
+        if (!(decor instanceof FrameLayout)) {
+            return;
+        }
+        FrameLayout frame = (FrameLayout) decor;
+        if (card.getParent() == frame) {
+            return; // already on the resumed foreground activity
+        }
+        // Detach from the old activity's decor (if somehow still attached).
+        if (card.getParent() instanceof ViewGroup) {
+            ((ViewGroup) card.getParent()).removeView(card);
+        }
+        FrameLayout.LayoutParams lp = card.getLayoutParams() instanceof FrameLayout.LayoutParams
+                ? (FrameLayout.LayoutParams) card.getLayoutParams() : null;
+        if (lp == null) {
+            lp = new FrameLayout.LayoutParams(
+                    LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END);
+            lp.topMargin = dp(card, 24);
+            lp.setMarginEnd(dp(card, 24));
+        }
+        card.mActivity = activity;
+        frame.addView(card, lp);
+        card.bringToFront();
+        JukeboxLog.i(JukeboxUpdate.LOG_TAG,
+                "prompt moved to the resumed foreground activity (the update card follows the foreground)");
+    }
+
+    /**
+     * Build 2473 gazebo (b): removes THIS card from whatever activity's decor
+     * it is attached to (not necessarily the caller's activity — the BACK key
+     * is consumed by the key router of the CURRENT foreground activity).
+     */
+    void dismissAttached(String reason) {
+        Activity activity = mActivity;
+        if (activity != null) {
+            dismiss(activity, reason);
+            return;
+        }
+        if (getParent() instanceof ViewGroup) {
+            mHandler.removeCallbacksAndMessages(null);
+            ((ViewGroup) getParent()).removeView(this);
+            if (sVisibleCard == this) {
+                sVisibleCard = null;
+            }
+            JukeboxLog.i(JukeboxUpdate.LOG_TAG, "prompt " + reason);
+        }
     }
 
     private void autoHide() {

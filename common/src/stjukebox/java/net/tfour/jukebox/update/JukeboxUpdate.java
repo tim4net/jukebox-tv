@@ -116,6 +116,10 @@ public class JukeboxUpdate {
                     // the update card — OK = install, BACK = dismiss while the
                     // card is visible, byte-for-byte pass-through otherwise.
                     JukeboxUpdateKeyRouter.attach(activity);
+                    // Nina's 2473 gazebo (a): a visible card MOVES to the newly
+                    // resumed foreground activity's decor (it used to stay on
+                    // the old activity's decor — never drawn, never keyed).
+                    JukeboxUpdateCard.move(activity);
                 }
 
                 @Override
