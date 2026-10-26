@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Build 2473, issue #5: the stjukebox self-update apk downloads into the
+         app's internal cacheDir/jukebox-update/ and is served to the package
+         installer via the FileProvider (authority <package>.jukeboxupdate).
+         cache-path root = context.getCacheDir(). -->
+    <cache-path name="jukebox_update" path="jukebox-update/" />
+</paths>

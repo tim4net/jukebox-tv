@@ -229,6 +229,33 @@ public class JukeboxUpdateTest {
         assertTrue(logged("prompt timeout"));
     }
 
+    // ---- Nina's 2473 gazebo item (a): the card follows the foreground ----
+
+    @Test
+    public void cardAttachesToTheResumedActivityAndMovesWhenTheForegroundChanges() {
+        JukeboxUpdate.init(app);
+        ActivityController<Activity> first = newActivity().setup();
+        Activity firstActivity = first.get();
+        assertEquals("the resumed activity must be the first one", firstActivity, update.currentActivity());
+        JukeboxUpdatePresenter presenter = new JukeboxUpdatePresenter(app, update::currentActivity);
+
+        presenter.onUpdateFound("32.68", Arrays.asList("fix"), null);
+        assertNotNull("the card must attach to the current resumed activity", cardOf(firstActivity));
+
+        // The foreground changes while the card is visible (a second activity
+        // is resumed, e.g. the player launching): the card must MOVE to the
+        // newly resumed foreground activity's decor (2473 gazebo: it stayed
+        // on the old activity's decor and was never drawn/never got keys).
+        first.pause();
+        ActivityController<Activity> second = newActivity().setup();
+        Activity secondActivity = second.get();
+        assertEquals("the resumed activity must now be the second one", secondActivity, update.currentActivity());
+
+        assertNotNull("a visible card must move to the newly resumed foreground activity",
+                cardOf(secondActivity));
+        assertNull("the card must not stay on the old activity's decor", cardOf(firstActivity));
+    }
+
     private static View cardOf(Activity activity) {
         View decor = activity.getWindow().getDecorView();
         if (!(decor instanceof ViewGroup)) {
