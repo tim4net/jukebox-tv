@@ -95,6 +95,22 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         Activity get();
     }
 
+    /**
+     * Build 2475, item 6: the immutable manifest facts of ONE offer, captured
+     * once when install is chosen and passed through download/verify (never
+     * re-read from the mutable offer fields while the install is in flight,
+     * so a newer offer arriving meanwhile cannot swap it).
+     */
+    static final class Offer {
+        final String url;
+        final int versionCode;
+
+        Offer(String url, int versionCode) {
+            this.url = url;
+            this.versionCode = versionCode;
+        }
+    }
+
     /** Downloads an apk URL to a destination file, reporting percent progress. */
     public interface ApkDownloader {
         void download(String url, File destFile, Progress progress) throws IOException;
@@ -115,6 +131,8 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
     private volatile boolean mDownloading;
     /** A verified apk kept while the app was backgrounded (issue #3). */
     private volatile String mPendingInstallPath;
+    /** The offer the pending install belongs to (item 6). */
+    private volatile Offer mPendingOffer;
     private AppUpdateChecker mChecker;
     /** Manifest facts of the current offer (set by ManifestChecker). */
     private volatile String mOfferedVersionName;
@@ -145,7 +163,8 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         }
         JukeboxLog.i(JukeboxUpdate.LOG_TAG,
                 "foreground: offering the install deferred while the app was backgrounded");
-        runAsync(() -> launchOrDefer(pending, false));
+        final Offer offer = mPendingOffer;
+        runAsync(() -> launchOrDefer(pending, offer, false));
     }
 
     // ---- manifest check (upstream) ----
@@ -234,6 +253,28 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         mOfferedDownloadUrl = downloadUrl;
     }
 
+    /** Item 6: the current offer captured as one immutable value. */
+    private Offer currentOffer() {
+        return new Offer(mOfferedDownloadUrl, mOfferedVersionCode);
+    }
+
+    /**
+     * Pure item-3 decision: null when {@code offeredVersionCode} may be
+     * offered/installed against the installed {@code installedVersionCode}
+     * (unknown installed build, or strictly newer), else the logged reason
+     * the offer must be refused (a downgrade is never offered or installed).
+     */
+    static String downgradeFailureReason(int offeredVersionCode, int installedVersionCode) {
+        if (installedVersionCode <= 0 || offeredVersionCode <= 0) {
+            return null; // installed build unknown / nothing offered: nothing to compare
+        }
+        if (offeredVersionCode > installedVersionCode) {
+            return null;
+        }
+        return "downgrade: offered versionCode " + offeredVersionCode
+                + " is not newer than the installed " + installedVersionCode;
+    }
+
     @Override
     public void onUpdateFound(String versionName, List<String> changelog, String apkPath) {
         // apkPath is the manifest's downloadUrl since build 2473 (the upstream
@@ -242,6 +283,12 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             mOfferedDownloadUrl = apkPath; // direct/test calls without a checker
         }
         int build = mOfferedVersionCode > 0 ? mOfferedVersionCode : buildCodeOf(apkPath);
+        // Build 2475, item 3: a version we already have (or older) is never offered.
+        String downgrade = downgradeFailureReason(build, installedVersionCode());
+        if (downgrade != null) {
+            JukeboxLog.i(JukeboxUpdate.LOG_TAG, "refusing " + downgrade);
+            return;
+        }
         JukeboxLog.i(JukeboxUpdate.LOG_TAG, "result: update available versionName=" + versionName
                 + (build > 0 ? " (build " + build + ")" : "")
                 + " changelogEntries=" + (changelog != null ? changelog.size() : 0)
@@ -298,6 +345,15 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
      * Only one download at a time. Never pauses playback, never steals focus.
      */
     void install() {
+        // Item 6: capture the offer NOW, once, immutably — the queued install
+        // must use it even if a newer offer arrives before it runs. Item 3:
+        // a downgrade is never offered or installed.
+        final Offer offer = currentOffer();
+        String downgrade = downgradeFailureReason(offer.versionCode, installedVersionCode());
+        if (downgrade != null) {
+            JukeboxLog.i(JukeboxUpdate.LOG_TAG, "refusing " + downgrade);
+            return;
+        }
         synchronized (mDownloadLock) {
             if (mDownloading) {
                 JukeboxLog.i(JukeboxUpdate.LOG_TAG,
@@ -306,10 +362,10 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             }
             mDownloading = true;
         }
-        runAsync(this::installAsync);
+        runAsync(() -> installAsync(offer));
     }
 
-    private void installAsync() {
+    private void installAsync(Offer offer) {
         try {
             String pending = mPendingInstallPath;
             if (pending != null) {
@@ -317,11 +373,11 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
                 // reuse it, never re-download.
                 JukeboxLog.i(JukeboxUpdate.LOG_TAG,
                         "install chosen: using the already downloaded update " + pending);
-                launchOrDefer(pending, false);
+                launchOrDefer(pending, mPendingOffer, false);
                 return;
             }
-            String url = mOfferedDownloadUrl;
-            int versionCode = mOfferedVersionCode;
+            String url = offer.url;
+            int versionCode = offer.versionCode;
             if (url == null || url.trim().isEmpty() || versionCode <= 0) {
                 JukeboxLog.i(JukeboxUpdate.LOG_TAG,
                         "install chosen: no manifest download url/versionCode known");
@@ -358,7 +414,7 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             JukeboxLog.i(JukeboxUpdate.LOG_TAG,
                     "download done: bytes=" + (destFile.exists() ? destFile.length() : 0)
                             + " dest=" + destFile);
-            launchOrDefer(destFile.getPath(), true);
+            launchOrDefer(destFile.getPath(), offer, true);
         } finally {
             synchronized (mDownloadLock) {
                 mDownloading = false;
@@ -388,21 +444,21 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
      *                      atomically so the install press and the foreground
      *                      hook can never both launch it (review fix #2).
      */
-    private void launchOrDefer(String path, boolean freshDownload) {
-        String bad = verifyFailureReason(path, mOfferedVersionCode);
+    private void launchOrDefer(String path, Offer offer, boolean freshDownload) {
+        String bad = verifyFailureReason(path, offer);
         if (bad != null) {
             JukeboxLog.i(JukeboxUpdate.LOG_TAG,
                     "verify failed: " + bad + " \u2014 deleting, will retry next time");
             delete(new File(path));
             delete(partOf(new File(path)));
-            setPendingInstall(null);
+            setPendingInstall(null, null);
             runOnMain(() -> cardText("Update download failed \u2014 will retry next time"));
             return;
         }
         if (!JukeboxForeground.isAppInForeground()) {
             // Issue #3: never launch anything from the background. Keep the
             // verified file; the next foreground transition offers the install.
-            setPendingInstall(path);
+            setPendingInstall(path, offer);
             JukeboxLog.i(JukeboxUpdate.LOG_TAG,
                     "install deferred: app is backgrounded (keeping " + path + ")");
             return;
@@ -418,10 +474,15 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         installer().launch(path);
     }
 
-    /** Atomically records/clears the pending (deferred) install path. */
-    private void setPendingInstall(String path) {
+    /**
+     * Atomically records/clears the pending (deferred) install path together
+     * with the offer it belongs to (item 6: the deferred install verifies
+     * against its OWN offer, not whatever is current when it resumes).
+     */
+    private void setPendingInstall(String path, Offer offer) {
         synchronized (mDownloadLock) {
             mPendingInstallPath = path;
+            mPendingOffer = offer;
         }
     }
 
@@ -434,6 +495,7 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         synchronized (mDownloadLock) {
             if (path != null && path.equals(mPendingInstallPath)) {
                 mPendingInstallPath = null;
+                mPendingOffer = null;
                 return true;
             }
             return false;
@@ -441,10 +503,11 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
     }
 
     /**
-     * @return null when the file verifies as our offered update, else the
-     *         logged reason it must never be launched.
+     * @return null when the file verifies as our offered update ({@code offer},
+     *         item 6 — never a re-read current offer), else the logged reason
+     *         it must never be launched.
      */
-    private String verifyFailureReason(String path, int expectedVersionCode) {
+    private String verifyFailureReason(String path, Offer offer) {
         File file = new File(path);
         boolean exists = file.exists();
         long size = exists ? file.length() : 0;
@@ -463,6 +526,7 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         if (info == null || !mAppContext.getPackageName().equals(pkg)) {
             return "wrong package: " + pkg;
         }
+        int expectedVersionCode = offer != null ? offer.versionCode : 0;
         int versionCode = (int) info.versionCode;
         JukeboxLog.i(JukeboxUpdate.LOG_TAG, "verify: versionCode=" + versionCode
                 + " expected=" + expectedVersionCode);
@@ -479,7 +543,7 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         // Build 2475, item 2: the manifest's optional sha256 for the apk
         // (absent = skip the file hash check; the cert pin above still applies).
         String wrongHash = manifestSha256FailureReason(
-                manifestApkSha256(mOfferedDownloadUrl), sha256OfFile(file));
+                manifestApkSha256(offer != null ? offer.url : null), sha256OfFile(file));
         if (wrongHash != null) {
             return wrongHash;
         }
@@ -565,9 +629,18 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
 
     // ---- build 2475 review seams (tests fake these) ----
 
-    /** The versionCode installed right now (downgrade guard, item 3). Stub. */
+    /**
+     * The versionCode installed right now (item 3): 0 when unknown, so the
+     * downgrade guard never fires without a real installed build to compare.
+     */
     protected int installedVersionCode() {
-        return 0;
+        try {
+            PackageInfo info = mAppContext.getPackageManager()
+                    .getPackageInfo(mAppContext.getPackageName(), 0);
+            return info != null ? (int) info.versionCode : 0;
+        } catch (PackageManager.NameNotFoundException notInstalled) {
+            return 0;
+        }
     }
 
     /**
