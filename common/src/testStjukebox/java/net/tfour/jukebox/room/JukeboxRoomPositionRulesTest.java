@@ -31,6 +31,10 @@ import static org.junit.Assert.assertTrue;
  * is unknown — callers must not seek to the end;</li>
  * <li>one publish is one snapshot: mid-publish, the previous song's position
  * still answers and the new video id does not.</li>
+ * <li>a paused snapshot with no {@code pausedAt} freezes at the snapshot's
+ * own server {@code now} and does not advance as time passes;</li>
+ * <li>{@code serverNowMs <= 0} and a negative position each answer
+ * {@code -1} in a case the other guard cannot.</li>
  * </ul>
  */
 @RunWith(RobolectricTestRunner.class)
@@ -136,6 +140,63 @@ public class JukeboxRoomPositionRulesTest {
         assertTrue("elapsed time since the snapshot must use SystemClock.elapsedRealtime() "
                         + "(got " + pos + "ms, want ~" + (ROOM_POS_MS + 30_000L) + ")",
                 pos >= ROOM_POS_MS + 30_000L && pos <= ROOM_POS_MS + 30_000L + 1_000L);
+    }
+
+    @Test
+    @LooperMode(LooperMode.Mode.LEGACY)
+    public void pausedSnapshotWithNoPausedAtDoesNotAdvance() {
+        // Host paused the song but the snapshot has no pausedAt (stored as
+        // pausedAtMs <= 0). Freeze at the snapshot's own serverNow, not at
+        // serverNow plus the time since the snapshot arrived.
+        long startedAt = SERVER_EPOCH_MS;
+        long serverNow = startedAt + ROOM_POS_MS;
+        state("s1", V1, startedAt, serverNow, true, null, DURATION_MS);
+
+        long elapsedBefore = SystemClock.elapsedRealtime();
+        long before = c.roomPositionMs(V1);
+        RuntimeEnvironment.getMasterScheduler().advanceBy(30_000L, TimeUnit.MILLISECONDS);
+        long elapsedMoved = SystemClock.elapsedRealtime() - elapsedBefore;
+        long after = c.roomPositionMs(V1);
+
+        assertTrue("elapsedRealtime must move so a running clock is visible (moved "
+                        + elapsedMoved + "ms)",
+                elapsedMoved >= 30_000L && elapsedMoved <= 31_000L);
+        assertEquals("a paused snapshot with no pausedAt freezes at the snapshot's own "
+                        + "serverNow (" + ROOM_POS_MS + "ms), not serverNow + elapsed "
+                        + "(before " + before + "ms, after " + after + "ms)",
+                ROOM_POS_MS, after);
+        assertEquals("that frozen position must not advance as time passes (before "
+                        + before + "ms, after " + after + "ms)",
+                before, after);
+    }
+
+    @Test
+    public void serverNowNonPositiveIsUnknownWhenPausedAtIsInRange() {
+        // Only the serverNowMs<=0 guard can answer -1. startedAt is positive,
+        // and pausedAt - startedAt is inside the song, so the posMs<0 guard
+        // would not fire. A missing server-now check would return ROOM_POS_MS.
+        long startedAt = SERVER_EPOCH_MS;
+        long pausedAt = startedAt + ROOM_POS_MS;
+        state("s1", V1, startedAt, 0L, true, pausedAt, DURATION_MS);
+
+        assertEquals("serverNowMs<=0 is unknown even when pausedAt is in range (got "
+                        + c.roomPositionMs(V1) + ")",
+                -1L, c.roomPositionMs(V1));
+    }
+
+    @Test
+    public void negativePositionIsUnknownWhenServerNowIsPositive() {
+        // Only the posMs<0 guard can answer -1. startedAt and serverNow are
+        // both positive, so the serverNowMs<=0 guard does not fire. The song
+        // starts after the snapshot clock, so the estimate is negative. A
+        // missing negative-position check would return that negative value.
+        long serverNow = SERVER_EPOCH_MS;
+        long startedAt = serverNow + 60_000L;
+        state("s1", V1, startedAt, serverNow, false, null, DURATION_MS);
+
+        assertEquals("a negative position is unknown when the server clock is present (got "
+                        + c.roomPositionMs(V1) + ")",
+                -1L, c.roomPositionMs(V1));
     }
 
     @Test
