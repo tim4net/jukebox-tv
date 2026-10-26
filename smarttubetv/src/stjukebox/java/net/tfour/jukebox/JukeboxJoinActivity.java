@@ -75,6 +75,17 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         setContentView(R.layout.jukebox_join);
 
         mQrView = findViewById(R.id.jukebox_qr);
+        // One listener for the life of the screen. It is armed only while a
+        // room song is active; setOnClickListener forces clickable, so clear
+        // that until updateDefaultFocus.
+        mQrView.setOnClickListener(v -> {
+            if (!mRoomSongActive) {
+                return;
+            }
+            JukeboxLog.i("JukeboxJoin", "join action (OK on QR): opening the player at the room video");
+            startResumeRetry("onOk");
+        });
+        mQrView.setClickable(false);
         mCodeView = findViewById(R.id.jukebox_code);
         mStatusView = findViewById(R.id.jukebox_status);
         mNowPlayingView = findViewById(R.id.jukebox_now_playing);
@@ -322,21 +333,14 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         mQrView.setFocusable(roomPlaying);
         mQrView.setClickable(roomPlaying);
         if (roomPlaying) {
-            mQrView.setOnClickListener(v -> {
-                JukeboxLog.i("JukeboxJoin", "join action (OK on QR): opening the player at the room video");
-                startResumeRetry("onOk");
-            });
             if (becamePlaying && !mQrView.hasFocus()) {
                 mQrView.requestFocus();
             }
-        } else {
-            mQrView.setOnClickListener(null);
-            if (qrHadFocus && mBrowseView != null) {
-                // The room went idle while the join action held focus: hand the
-                // default back to the layout's own default (Browse). Losing
-                // focusability does not restore it.
-                mBrowseView.requestFocus();
-            }
+        } else if (qrHadFocus && mBrowseView != null) {
+            // The room went idle while the join action held focus: hand the
+            // default back to the layout's own default (Browse). Losing
+            // focusability does not restore it.
+            mBrowseView.requestFocus();
         }
     }
 
