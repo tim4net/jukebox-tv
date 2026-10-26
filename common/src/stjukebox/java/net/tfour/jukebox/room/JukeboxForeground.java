@@ -30,13 +30,16 @@ public final class JukeboxForeground {
     private static volatile int sResumedActivities;
     private static volatile boolean sLifecycleSeen;
     private static volatile Application sTrackingApp;
+    private static volatile Application.ActivityLifecycleCallbacks sCallbacks;
 
     private JukeboxForeground() {
     }
 
     /**
      * Registers the resumed-activity counter on the given app (idempotent; called
-     * once at process start, before any activity exists).
+     * once at process start, before any activity exists). A defensive re-init
+     * with a different {@link Application} unregisters the previous callbacks
+     * first, so a second registration can never double-count (or leak) the first.
      */
     public static void init(Application app) {
         if (app == null) {
@@ -46,10 +49,11 @@ public final class JukeboxForeground {
             if (sTrackingApp == app) {
                 return; // already tracking this app instance
             }
+            unregisterCallbacks();
             sTrackingApp = app;
             sResumedActivities = 0;
             sLifecycleSeen = false;
-            app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
+            Application.ActivityLifecycleCallbacks callbacks = new Application.ActivityLifecycleCallbacks() {
                 @Override
                 public void onActivityResumed(Activity activity) {
                     sResumedActivities++;
@@ -58,7 +62,11 @@ public final class JukeboxForeground {
 
                 @Override
                 public void onActivityPaused(Activity activity) {
-                    sResumedActivities--;
+                    // Clamp at zero: an unmatched pause (activity recreation edge
+                    // case, multi-window) must never drive the counter negative —
+                    // isAppInForeground() would stay false after the next resume
+                    // and defer room resumes forever.
+                    sResumedActivities = Math.max(0, sResumedActivities - 1);
                 }
 
                 @Override
@@ -85,7 +93,22 @@ public final class JukeboxForeground {
                 public void onActivityDestroyed(Activity activity) {
                     // NOP
                 }
-            });
+            };
+            sCallbacks = callbacks;
+            app.registerActivityLifecycleCallbacks(callbacks);
+        }
+    }
+
+    /** Removes the tracker from the app it was registered on (if any). */
+    private static void unregisterCallbacks() {
+        Application trackingApp = sTrackingApp;
+        Application.ActivityLifecycleCallbacks callbacks = sCallbacks;
+        if (trackingApp != null && callbacks != null) {
+            try {
+                trackingApp.unregisterActivityLifecycleCallbacks(callbacks);
+            } catch (RuntimeException ignored) {
+                // App already gone: nothing to unregister.
+            }
         }
     }
 
@@ -117,7 +140,9 @@ public final class JukeboxForeground {
     /** Test seam: forget the tracker so a fresh init can register a new app. */
     public static void resetForTests() {
         synchronized (JukeboxForeground.class) {
+            unregisterCallbacks();
             sTrackingApp = null;
+            sCallbacks = null;
             sResumedActivities = 0;
             sLifecycleSeen = false;
         }

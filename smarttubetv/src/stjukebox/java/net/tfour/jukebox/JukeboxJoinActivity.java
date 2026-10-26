@@ -127,6 +127,10 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
      * Forwards view intents (any action other than MAIN, or a data Uri) to
      * {@link SplashActivity} unchanged (action, data, extras, flags) and returns true.
      * Plain launcher launches (MAIN or no action, without data) stay on the join screen.
+     *
+     * The forward is app-initiated, so it is gated by {@link JukeboxLaunch#checkLaunch}
+     * (issue #3): while the app is backgrounded the deep link is only logged (the
+     * user returns to the join screen), never launched over whatever app is in use.
      */
     private boolean maybeForwardToMain(Intent intent) {
         if (intent == null) {
@@ -138,10 +142,15 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         if (plainLaunch) {
             return false;
         }
+        JukeboxLaunch.noteIntent(this, "JukeboxJoinActivity.forward", intent);
+        if (!JukeboxLaunch.checkLaunch(SplashActivity.class.getSimpleName(),
+                "join screen forwarded non-launcher intent")) {
+            // Blocked while backgrounded: the forwarded launch would take over
+            // the TV. Stay on the join screen; the intent is verifiable above.
+            return false;
+        }
         Intent forwarded = new Intent(intent);
         forwarded.setClassName(getPackageName(), SplashActivity.class.getName());
-        JukeboxLaunch.noteLaunch("SplashActivity", "join screen forwarded non-launcher intent");
-        JukeboxLaunch.noteIntent(this, "JukeboxJoinActivity.forward", intent);
         startActivity(forwarded);
         return true;
     }
@@ -214,9 +223,13 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
             if (JukeboxRoom.isRoomActive()) {
                 JukeboxRoomController controller = PlaybackPresenter.instance(this)
                         .getController(JukeboxRoomController.class);
-                if (controller != null) {
-                    controller.resumeRoomSongIfNeeded(
-                            "join:" + mResumeRetryVia + ":tick" + mResumeRetryIndex);
+                if (controller != null
+                        && !controller.resumeRoomSongIfNeeded(
+                                "join:" + mResumeRetryVia + ":tick" + mResumeRetryIndex)) {
+                    // The song opened, or retrying cannot help (reopen cap
+                    // reached for it): stop asking instead of logging the same
+                    // deferral on every remaining tick.
+                    return;
                 }
             }
             postNextResumeRetry();

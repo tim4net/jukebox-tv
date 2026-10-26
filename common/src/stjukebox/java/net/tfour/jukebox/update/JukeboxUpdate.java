@@ -88,9 +88,15 @@ public class JukeboxUpdate {
             JukeboxLog.i(LOG_TAG, "skip at run time: " + skip);
             return;
         }
-        markChecked();
-        JukeboxLog.i(LOG_TAG, "check: querying update manifest now");
-        startCheck();
+        try {
+            JukeboxLog.i(LOG_TAG, "check: querying update manifest now");
+            startCheck();
+        } finally {
+            // Stamp the check even if it blows up mid-flight: otherwise every
+            // later schedule (e.g. each join-screen resume) would immediately
+            // re-run a check that just crashed.
+            markChecked();
+        }
     }
 
     /** Starts the real AppUpdatePresenter check. Overridden by tests. */

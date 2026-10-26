@@ -270,4 +270,54 @@ public class JukeboxBackgroundLaunchGateTest {
         controller.resumeRoomSongIfNeeded("join:onResume:tick2");
         assertEquals("the exact room song must open on return", V1, presenter.getVideo().videoId);
     }
+
+    @Test
+    public void blockedReopenLaunchDoesNotStrandTheInFlightMarker() throws Exception {
+        // Review critical #2 / test gap 9: if the app backgrounds between the
+        // resume check and the launch inside openVideo, JukeboxLaunch blocks the
+        // ViewManager.startView — but the openVideo dispatch already marked the
+        // room video "in flight" (onNewVideo). That marker must not survive the
+        // blocked launch: every later retry would see "load already on its way"
+        // and the room would stay silent forever. The controller under test is
+        // the presenter's own reflectively-registered one (exactly production),
+        // so its onNewVideo runs inside the openVideo dispatch.
+        JukeboxLaunch.init(true, JukeboxForeground::isAppInForeground);
+        ViewManager viewManager = ViewManager.instance(app());
+        viewManager.register(PlaybackView.class, Activity.class);
+        viewManager.setRoot(Activity.class);
+        JukeboxRoomController wired = presenter.getController(JukeboxRoomController.class);
+        assertNotNull(wired);
+
+        // Lands the moment the openVideo dispatch starts: the launch (startView)
+        // follows right after it, so the gate blocks that launch.
+        final boolean[] backgroundedMidOpen = {false};
+        BasePlayerController midOpenRacer = new BasePlayerController() {
+            @Override
+            public void onNewVideo(Video item) {
+                if (!backgroundedMidOpen[0]) {
+                    backgroundedMidOpen[0] = true;
+                    JukeboxForeground.setTestOverride(false); // HOME/other app lands mid-open
+                }
+            }
+        };
+        Field listenersField = PlaybackPresenter.class.getDeclaredField("mEventListeners");
+        listenersField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<Object> listeners = (List<Object>) listenersField.get(presenter);
+        listeners.add(midOpenRacer);
+
+        setPresenterVideo(null);
+        wired.onStateChanged("Hey"); // resume check passes (foreground) -> open -> blocked launch
+        assertEquals("the open itself dispatched before the gate", V1, presenter.getVideo().videoId);
+        assertNull("the blocked launch must not start any activity",
+                Shadows.shadowOf(app()).getNextStartedActivity());
+        assertTrue("the blocked launch must be logged",
+                logged("JukeboxLaunch", "blocked Activity"));
+
+        JukeboxForeground.setTestOverride(true); // the user returns
+        wired.resumeRoomSongIfNeeded("join:onResume:tick1");
+        assertEquals("the retry must reopen the exact room song", V1, presenter.getVideo().videoId);
+        assertNotNull("the retry's launch is allowed in the foreground (marker was not stranded)",
+                Shadows.shadowOf(app()).getNextStartedActivity());
+    }
 }
