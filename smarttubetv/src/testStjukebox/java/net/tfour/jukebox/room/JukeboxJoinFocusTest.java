@@ -172,6 +172,49 @@ public class JukeboxJoinFocusTest {
     }
 
     @Test
+    public void okOnTheQrStillOpensThePlayerAfterStateChanges() {
+        // Backgrounded so each state update re-renders the join action without
+        // opening the player. The click has to survive those renders: a later
+        // state while the room stays playing, then playing -> idle -> playing.
+        JukeboxForeground.setTestOverride(false);
+        launchJoin();
+        layoutLikeTheTv();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        drainStarted();
+
+        t.msg(state("s1", V1, TITLE));
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        t.msg(state("s1", V1, "Still The Same Song"));
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        t.msg(idleState());
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        View qr = ac.get().findViewById(R.id.jukebox_qr);
+        assertFalse("the QR join action is not active while the room is idle", qr.isFocusable());
+        qr.performClick();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertNull("OK on the QR while the room is idle must not open the player",
+                PlaybackPresenter.instance(app()).getVideo());
+        drainStarted();
+
+        t.msg(state("s1", V1, TITLE));
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        drainStarted();
+        assertNull("state changes while backgrounded must not open the player",
+                PlaybackPresenter.instance(app()).getVideo());
+        assertTrue("the QR join action is focusable again after the room resumes playing",
+                qr.isFocusable());
+
+        JukeboxForeground.setTestOverride(true);
+        assertTrue(qr.performClick());
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals(V1, PlaybackPresenter.instance(app()).getVideo().videoId);
+        assertEquals("OK on the QR after later state changes opens the room video exactly once",
+                java.util.Arrays.asList(PlaybackActivity.class.getName()), startedActivities());
+    }
+
+    @Test
     public void idleRoomKeepsBrowseReachableAsTheDefaultAction() {
         JukeboxForeground.setTestOverride(true);
         launchJoin();
@@ -228,6 +271,10 @@ public class JukeboxJoinFocusTest {
         return "{\"t\":\"state\",\"room\":\"room1\",\"nowPlaying\":{\"songId\":\"" + songId
                 + "\",\"videoId\":\"" + videoId + "\",\"title\":\"" + title
                 + "\"},\"queue\":[],\"listeners\":1}";
+    }
+
+    private static String idleState() {
+        return "{\"t\":\"state\",\"room\":\"room1\",\"nowPlaying\":null,\"queue\":[],\"listeners\":1}";
     }
 
     private static List<String> startedActivities() {
