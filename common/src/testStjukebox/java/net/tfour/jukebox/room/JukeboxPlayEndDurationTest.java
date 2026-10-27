@@ -30,6 +30,7 @@ import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -38,12 +39,15 @@ import static org.junit.Assert.fail;
  * still be decided, from the room snapshot's duration, and when both are
  * unknown the end is accepted. The heartbeat stops on every path. The end
  * margin is one constant and one {@code isAtEnd} helper, also applied to the
- * {@code pendingPosMs} fallback. A null player is logged.
+ * {@code pendingPosMs} fallback. A null player is logged. A video that is
+ * not the room's current song sends nothing, even inside the end window.
  */
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 28)
 public class JukeboxPlayEndDurationTest {
     static final String V1 = "dQw4w9WgXcQ";
+    /** A browse pick. Not the room song. */
+    static final String V2 = "9bZkp7q19f0";
     static final long DURATION_MS = 293_000L;
     /** Inside the last 2s: a real end of {@link #DURATION_MS}. */
     static final long END_POS_MS = 292_000L;
@@ -192,6 +196,28 @@ public class JukeboxPlayEndDurationTest {
     }
 
     @Test
+    public void nonRoomVideoEndingInsideTheWindowSendsNothing() throws Exception {
+        // Room song V1 is loaded and its heartbeat is running. A different
+        // video then reaches its own end (playhead inside the 2s window).
+        // That end must not be reported as the room song's.
+        armHeartbeat(END_POS_MS, DURATION_MS);
+        Video other = Video.from(V2);
+        playerVideo[0] = other;
+        setPresenterVideo(other);
+        int sentBefore = t.sent.size();
+
+        controller.onPlayEnd();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals("a non-room video ending inside the window must send nothing",
+                sentBefore, t.sent.size());
+        assertEquals(0, t.count("ended"));
+        assertEquals("the room song must stay current", V1, room.getCurrentVideoId());
+        assertNull("a non-room end must not arm the ended guard", endedVideoId());
+        assertFalse("heartbeat must stop on the non-room end path too", heartbeatRunning());
+    }
+
+    @Test
     public void nullPlayerIsLogged() throws Exception {
         armHeartbeat(MID_POS_MS, -1L);
         presenter.setView(null);
@@ -321,6 +347,12 @@ public class JukeboxPlayEndDurationTest {
         Field field = JukeboxRoomController.class.getDeclaredField("mHeartbeatRunning");
         field.setAccessible(true);
         return field.getBoolean(controller);
+    }
+
+    private String endedVideoId() throws Exception {
+        Field field = JukeboxRoomController.class.getDeclaredField("mEndedVideoId");
+        field.setAccessible(true);
+        return (String) field.get(controller);
     }
 
     private static boolean logged(String tag, String fragment) {
