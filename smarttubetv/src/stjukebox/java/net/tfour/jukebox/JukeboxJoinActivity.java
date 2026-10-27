@@ -284,9 +284,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
                 // The song opened, or retrying cannot help (reopen cap reached,
                 // idle room, already playing): stop asking instead of logging
                 // the same deferral on every remaining tick. The decision itself
-                // was logged by the controller. An idle skip is not finished
-                // while the song is still unknown: the first later room update
-                // or state that names one asks again, exactly once.
+                // was logged by the controller.
                 rememberIdleResumeSkip();
                 return;
             }
@@ -361,9 +359,6 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     public void onRoomUpdated() {
         JukeboxRoom room = JukeboxRoom.instance(this);
         bind(room.getCode(), room.getJoinUrl(), room.getStatus(), room.getNowPlaying());
-        // bind() above may already have marked the room playing. If the resume
-        // retry stopped on an idle room before this song was known, ask now —
-        // onStateChanged will see wasPlaying and must not ask a second time.
         resumeSkippedIdleIfSongKnown("onRoom");
     }
 
@@ -379,22 +374,10 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         boolean wasPlaying = mRoomSongActive;
         updateDefaultFocus();
         if (!wasPlaying && mRoomSongActive && !isFinishing()) {
-            // The first resume tick often runs before the websocket state
-            // arrives and treats "no song known yet" as a terminal idle.
-            // The idle-to-playing transition is when the song becomes known:
-            // open the player now (a snapshot-sourced id on the join screen
-            // is the room's current song, not a fresh foreground snapshot
-            // that should wait for its own play). This ask consumes the
-            // idle-skip one-shot so a room update does not open again.
-            mResumeSkippedIdle = false;
-            JukeboxRoomController controller = PlaybackPresenter.instance(this)
-                    .getController(JukeboxRoomController.class);
-            if (controller == null || controller.resumeRoomSongIfNeeded("join:onState")) {
-                startResumeRetry("onState");
-            }
+            // A snapshot-sourced id on the join screen is the room's current
+            // song, not a fresh foreground snapshot waiting for its own play.
+            askRoomResume("onState");
         } else {
-            // Room-ready's bind() already applied the playing flag, so the
-            // edge above is gone. The idle-skip one-shot still owes one ask.
             resumeSkippedIdleIfSongKnown("onState");
         }
     }
@@ -409,11 +392,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         mResumeSkippedIdle = room.isActive() && room.getCurrentVideoId() == null;
     }
 
-    /**
-     * One ask after an idle skip, once a room update or state names a song.
-     * No-op until then, and no-op after the ask (including when {@link
-     * #onStateChanged}'s idle-to-playing edge already asked).
-     */
+    /** One ask after an idle skip, once a room update or state names a song. */
     private void resumeSkippedIdleIfSongKnown(String retryVia) {
         if (!mResumeSkippedIdle || isFinishing()) {
             return;
@@ -422,11 +401,20 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         if (!room.isActive() || room.getCurrentVideoId() == null) {
             return;
         }
+        askRoomResume(retryVia);
+    }
+
+    /**
+     * One resume check. A missing controller, or a check that says a later
+     * try could still succeed, restarts the bounded retry. Otherwise the
+     * one-shot is armed only when the room still has no current song.
+     */
+    private void askRoomResume(String via) {
         mResumeSkippedIdle = false;
         JukeboxRoomController controller = PlaybackPresenter.instance(this)
                 .getController(JukeboxRoomController.class);
-        if (controller == null || controller.resumeRoomSongIfNeeded("join:" + retryVia)) {
-            startResumeRetry(retryVia);
+        if (controller == null || controller.resumeRoomSongIfNeeded("join:" + via)) {
+            startResumeRetry(via);
             return;
         }
         // Opened, or retrying cannot help. If the song vanished mid-ask,
