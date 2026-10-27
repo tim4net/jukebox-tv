@@ -7,6 +7,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.ImageView;
@@ -50,8 +51,8 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     private Button mBrowseView;
     /**
      * Last room-playing answer applied to focus. Default focus moves to the
-     * join action only on the idle-to-playing transition, not on every
-     * state or onResume.
+     * QR join action when playback starts, and again on resume while the room
+     * stays playing unless the user has moved to Browse.
      */
     private boolean mRoomSongActive;
     private TextView mCodeView;
@@ -66,7 +67,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     /**
      * The resume retry stopped because the room had no current song yet
      * ("resume skipped: idle room"), not because a known song was opened or
-     * rejected. Room-ready's {@link #bind} runs {@link #updateDefaultFocus}
+     * rejected. Room-ready's {@link #bind} runs {@link #applyJoinFocus(boolean)}
      * before {@link #onStateChanged}, so that callback can see the room as
      * already playing and skip its idle-to-playing ask. The next room update
      * or state that names a song must ask once, then this is cleared.
@@ -86,7 +87,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         mQrView = findViewById(R.id.jukebox_qr);
         // One listener for the life of the screen. It is armed only while a
         // room song is active; setOnClickListener forces clickable, so clear
-        // that until updateDefaultFocus.
+        // that until applyJoinFocus.
         mQrView.setOnClickListener(v -> {
             if (!mRoomSongActive) {
                 return;
@@ -121,49 +122,16 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
 
         // The room is started in onStart(): onCreate is always followed by onStart,
         // and starting here as well would race the two back-to-back start() calls.
-        // Focus is applied in onResume / onWindowFocusChanged, after layout:
-        // BROWSE YOUTUBE while idle, the QR join action while a room song is playing.
+        // Focus is applied from the room state: BROWSE YOUTUBE while idle, the QR
+        // join action while a room song is playing. The room code is not focusable.
     }
 
     /**
-     * After layout, default focus follows the room: the QR join action while a
-     * room song is playing, BROWSE YOUTUBE while idle. Never the room code.
-     * Called from resume and again when the window actually gains focus, because
-     * a layout pass in between assigns focus to the first sized focusable
-     * otherwise. The posted request runs after that layout and reads the room
-     * state then, so a song that arrives in between is not overwritten.
-     * A later resume while the room stays playing does not pull focus off
-     * Browse once the user has moved there. No-op before the join UI exists
-     * (a forwarded launch has no views).
+     * Default focus target. Browse while the room is idle; the QR join action
+     * while a room song is playing.
      */
-    private void applyDefaultFocusAfterLayout() {
-        if (mQrView == null || mBrowseView == null) {
-            return;
-        }
-        requestDefaultFocus();
-        mBrowseView.post(this::requestDefaultFocus);
-    }
-
-    private void requestDefaultFocus() {
-        if (mQrView == null || mBrowseView == null) {
-            return;
-        }
-        if (mRoomSongActive) {
-            if (mBrowseView.hasFocus()) {
-                return;
-            }
-            mQrView.requestFocus();
-            return;
-        }
-        mBrowseView.requestFocus();
-    }
-
-    @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) {
-            applyDefaultFocusAfterLayout();
-        }
+    public static int defaultFocusId(boolean roomPlaying) {
+        return roomPlaying ? R.id.jukebox_qr : R.id.jukebox_browse;
     }
 
     @Override
@@ -277,9 +245,8 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         // keep re-running the controller's resume check for a short while so a
         // single mistimed check (the 2465 failure) can't leave the room silent.
         startResumeRetry("onResume");
-        updateDefaultFocus();
-        // Last focus request of onResume, after layout: idle -> Browse, playing -> QR join.
-        applyDefaultFocusAfterLayout();
+        // Idle -> Browse. Playing -> QR, unless the user has moved to Browse.
+        applyJoinFocus(true);
     }
 
     @Override
@@ -365,20 +332,20 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         mStatusView.setText(status != null ? status : "");
         mNowPlayingView.setText(nowPlaying != null && !nowPlaying.isEmpty()
                 ? getString(R.string.jukebox_now_playing, nowPlaying) : "");
-        updateDefaultFocus();
+        applyJoinFocus(false);
     }
 
     /**
-     * While the room is playing, OK on the QR opens the player at the room
-     * video. Default focus moves onto that join action only on the
-     * idle-to-playing transition: a later state or onResume must not pull
-     * focus off Browse once the user has moved there. With no room song the
-     * layout default (Browse) stays, and a playing-to-idle transition hands
-     * focus back to it explicitly.
+     * Arms the QR join action while the room is playing and moves focus to
+     * {@link #defaultFocusId(boolean)}. A state update moves focus only when playback
+     * starts, or back to Browse when it stops while the QR held focus. Resume
+     * restores that default, but does not pull focus off Browse once the user
+     * has moved there while the room stays playing. No-op before the join UI
+     * exists (a forwarded launch has no views).
      */
-    private void updateDefaultFocus() {
+    private void applyJoinFocus(boolean fromResume) {
         if (mQrView == null) {
-            return; // forwarded launch: no UI was created
+            return;
         }
         JukeboxRoom room = JukeboxRoom.instance(this);
         boolean roomPlaying = room.isActive() && room.getCurrentVideoId() != null;
@@ -388,15 +355,22 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         mRoomSongActive = roomPlaying;
         mQrView.setFocusable(roomPlaying);
         mQrView.setClickable(roomPlaying);
+
+        View target = findViewById(defaultFocusId(roomPlaying));
+        if (target == null) {
+            return;
+        }
         if (roomPlaying) {
-            if (becamePlaying && !mQrView.hasFocus()) {
-                mQrView.requestFocus();
+            if (becamePlaying && !target.hasFocus()) {
+                target.requestFocus();
+            } else if (fromResume && (mBrowseView == null || !mBrowseView.hasFocus())) {
+                target.requestFocus();
             }
-        } else if (qrHadFocus && mBrowseView != null) {
-            // The room went idle while the join action held focus: hand the
-            // default back to the layout's own default (Browse). Losing
-            // focusability does not restore it.
-            mBrowseView.requestFocus();
+            return;
+        }
+        if (qrHadFocus || fromResume) {
+            // Losing focusability does not restore the layout default.
+            target.requestFocus();
         }
     }
 
@@ -417,7 +391,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         mNowPlayingView.setText(nowPlaying != null && !nowPlaying.isEmpty()
                 ? getString(R.string.jukebox_now_playing, nowPlaying) : "");
         boolean wasPlaying = mRoomSongActive;
-        updateDefaultFocus();
+        applyJoinFocus(false);
         if (!wasPlaying && mRoomSongActive && !isFinishing()) {
             // A snapshot-sourced id on the join screen is the room's current
             // song, not a fresh foreground snapshot waiting for its own play.
