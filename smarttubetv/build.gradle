@@ -77,7 +77,7 @@ android {
         applicationId "app.smarttube"
         minSdkVersion project.properties.minSdkVersion
         targetSdkVersion project.properties.targetSdkVersion
-        versionCode 2488
+        versionCode 2489
         versionName "32.68"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField "long", "TIMESTAMP", System.currentTimeMillis() + "L"
@@ -200,7 +200,7 @@ android {
             targetSdkVersion project.properties.compileSdkVersion
             // Jukebox builds on top of the shared versionCode; keep the other
             // flavors at defaultConfig's version.
-            versionCode 2488
+            versionCode 2489
             // Submodule deps (youtubeapi) have no stjukebox flavor; fall back to ststable
             matchingFallbacks = ['ststable']
         }
