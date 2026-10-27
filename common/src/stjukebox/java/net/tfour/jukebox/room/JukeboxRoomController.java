@@ -30,7 +30,9 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
      * as "a load of the room video is on its way". The engine load of an openVideo
      * settles within seconds; a marker older than this is leftover state (e.g. the
      * engine was released mid-load while the app sat backgrounded) and must never
-     * silence the room forever.
+     * silence the room forever. 15s, not shorter: a normal pending load
+     * ({@code onNewVideo} before the player activity has attached) is young and
+     * must not be treated as stale.
      */
     private static final long LOAD_IN_FLIGHT_TIMEOUT_MS = 15_000;
 
@@ -52,7 +54,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     private String mEndedVideoId;
     /** VideoId whose load is in flight (seen in onNewVideo, not yet onVideoLoaded). */
     private String mLoadingVideoId;
-    /** {@link SystemClock#uptimeMillis()} when {@link #mLoadingVideoId} was set; 0 while none. */
+    /** {@link SystemClock#elapsedRealtime()} when {@link #mLoadingVideoId} was set; 0 while none. */
     private long mLoadingSinceMs;
     /**
      * True while a room-song resume was deferred because the app went away (a
@@ -131,7 +133,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         // "stale id of the released song" — only this can. Also drop a resume
         // check posted by onEngineReleased(): a new load is on its way.
         mLoadingVideoId = item != null ? item.videoId : null;
-        mLoadingSinceMs = mLoadingVideoId != null ? SystemClock.uptimeMillis() : 0L;
+        mLoadingSinceMs = mLoadingVideoId != null ? SystemClock.elapsedRealtime() : 0L;
         handler().removeCallbacks(mResumeCheck);
     }
 
@@ -525,14 +527,20 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             return false;
         }
         if (roomVideoId.equals(mLoadingVideoId)) {
+            // A young marker is a normal pending load. onNewVideo sets it from
+            // inside openVideo, before the player activity has attached
+            // (JukeboxRoom opens the video before it notifies listeners, and
+            // that resume must already see the load). "No player yet" is that
+            // window, not a failed open — treating it as stale opens the same
+            // video a second time and cancels the load. A launch that never
+            // started a player clears the marker itself (see
+            // clearLoadThatNeverStarted). Only age past the timeout is stale.
             if (isLoadInFlight()) {
-                // The engine (re)load of the room video is already on its way.
                 logResume(via, "resume skipped: load of " + roomVideoId + " in flight");
                 return false;
             }
-            logResume(via, "resume: in-flight marker " + roomVideoId
-                    + " is stale (no load finished within " + LOAD_IN_FLIGHT_TIMEOUT_MS
-                    + "ms): resuming the room song");
+            logResume(via, "resume: in-flight marker " + roomVideoId + " is stale (no load finished within "
+                    + LOAD_IN_FLIGHT_TIMEOUT_MS + "ms): resuming the room song");
             mLoadingVideoId = null;
             mLoadingSinceMs = 0L;
         }
@@ -587,7 +595,19 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     /** True while the in-flight load marker is young enough to still be a real load. */
     private boolean isLoadInFlight() {
         long since = mLoadingSinceMs;
-        return since != 0L && SystemClock.uptimeMillis() - since <= LOAD_IN_FLIGHT_TIMEOUT_MS;
+        return since != 0L && SystemClock.elapsedRealtime() - since <= LOAD_IN_FLIGHT_TIMEOUT_MS;
+    }
+
+    /**
+     * Drops the in-flight marker when {@code openVideo} did not start a player
+     * (the launch gate blocked it). {@code onNewVideo} has already set the
+     * marker, and no {@code onVideoLoaded} will ever clear it. A young marker
+     * must not be cleared just because the player activity has not attached
+     * yet — that is a normal pending load.
+     */
+    void clearLoadThatNeverStarted() {
+        mLoadingVideoId = null;
+        mLoadingSinceMs = 0L;
     }
 
     /**
