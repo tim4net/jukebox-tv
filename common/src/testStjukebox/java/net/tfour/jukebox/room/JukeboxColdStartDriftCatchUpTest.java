@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -40,7 +41,8 @@ import static org.junit.Assert.assertTrue;
  * {@code onPlay} (pause/resume) does not seek. Drift of half a second, an
  * unknown room position ({@code -1}), and a paused room do not seek. A
  * playhead more than 1s ahead seeks back. The next song's load gets its own
- * one-shot seek. A room song that changes before the first play does not.
+ * one-shot seek. A room song that changes before the first play does not. A
+ * first {@code onPlay} before any song is loaded does not seek and does not throw.
  *
  * <p>The player position stands in for the position captured at open time.
  * {@code setPositionMs} is recorded and does not move the playhead, so a
@@ -234,6 +236,16 @@ public class JukeboxColdStartDriftCatchUpTest {
             }
         }
         return n;
+    }
+
+    /** First logged throwable, or null. A swallowed NPE still shows up here. */
+    private static Throwable loggedThrowable() {
+        for (ShadowLog.LogItem item : ShadowLog.getLogs()) {
+            if (item.throwable != null) {
+                return item.throwable;
+            }
+        }
+        return null;
     }
 
     @Test
@@ -439,6 +451,44 @@ public class JukeboxColdStartDriftCatchUpTest {
         assertTrue(seek >= roomBefore && seek <= roomAfter);
         assertEquals("one seek, one log line", 1,
                 countLogs("JukeboxPopup", "seeking once to room position "));
+    }
+
+    /**
+     * No song has been loaded ({@code mLoadedVideoId} is null). A player is
+     * present and the room position is more than 1s from the playhead. The
+     * first {@code onPlay} runs {@code catchUpColdStartDriftOnce} and must not
+     * seek and must not throw. Removing {@code || mLoadedVideoId == null}
+     * NPEs on {@code mLoadedVideoId.equals} (or, if that NPE is caught, seeks
+     * or logs the throwable). Either way an assertion here fails.
+     */
+    @Test
+    public void driftCheckBeforeAnySongIsLoadedDoesNotSeekOrThrow() throws Exception {
+        playingSnapshot();
+        assertNull("no song is loaded yet", loadedVideoId());
+        assertTrue("a player must be present for this check", wired.getPlayer() != null);
+        long roomPos = room.getRoomPositionMs(V1);
+        playerPos[0] = 0L;
+        assertTrue("room position must be known and more than 1s from the playhead (got "
+                        + roomPos + ")",
+                roomPos > 1_000L);
+        seeks.clear();
+        ShadowLog.clear();
+
+        Throwable thrown = null;
+        try {
+            wired.onPlay();
+        } catch (Throwable t) {
+            thrown = t;
+        }
+
+        assertEquals("a drift check before any song is loaded must not seek: " + seeks,
+                0, seeks.size());
+        assertNull("a drift check before any song is loaded must not throw: " + thrown, thrown);
+        assertNull("a drift check before any song is loaded must not log a throwable: "
+                        + loggedThrowable(),
+                loggedThrowable());
+        assertEquals(0, countLogs("JukeboxPopup", "seeking once to room position "));
+        assertNull("the loaded id stays null", loadedVideoId());
     }
 
     @Test
