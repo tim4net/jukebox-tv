@@ -38,7 +38,9 @@ import static org.junit.Assert.assertTrue;
  * <p>The first {@code onPlay} after the room song is loaded recomputes the
  * room position and seeks once when the playhead is more than 1s off. A later
  * {@code onPlay} (pause/resume) does not seek. Drift of half a second, an
- * unknown room position ({@code -1}), and a paused room do not seek.
+ * unknown room position ({@code -1}), and a paused room do not seek. A
+ * playhead more than 1s ahead seeks back. The next song's load gets its own
+ * one-shot seek. A room song that changes before the first play does not.
  *
  * <p>The player position stands in for the position captured at open time.
  * {@code setPositionMs} is recorded and does not move the playhead, so a
@@ -48,6 +50,7 @@ import static org.junit.Assert.assertTrue;
 @Config(sdk = 28)
 public class JukeboxColdStartDriftCatchUpTest {
     static final String V1 = "dQw4w9WgXcQ";
+    static final String V2 = "9bZkp7q19f0";
     static final long ROOM_POS_MS = 120_000L;
     static final long DURATION_MS = 300_000L;
     static final long SERVER_EPOCH_MS = 1_700_000_000_000L;
@@ -153,6 +156,16 @@ public class JukeboxColdStartDriftCatchUpTest {
 
     private void snapshot(String songId, String videoId, Long startedAtMs, Long serverNowMs,
                           boolean paused, Long pausedAtMs, Long durationMs) {
+        postState(songId, videoId, startedAtMs, serverNowMs, paused, pausedAtMs, durationMs);
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+    }
+
+    /**
+     * Delivers a state snapshot without draining the main looper. The room's
+     * current song and position update on this thread; listener work stays queued.
+     */
+    private void postState(String songId, String videoId, Long startedAtMs, Long serverNowMs,
+                           boolean paused, Long pausedAtMs, Long durationMs) {
         StringBuilder sb = new StringBuilder("{\"t\":\"state\",\"room\":\"room1\"");
         if (serverNowMs != null) {
             sb.append(",\"now\":").append(serverNowMs);
@@ -179,7 +192,6 @@ public class JukeboxColdStartDriftCatchUpTest {
         }
         sb.append(",\"queue\":[],\"listeners\":1}");
         t.msg(sb.toString());
-        Shadows.shadowOf(Looper.getMainLooper()).idle();
     }
 
     /** Load the room song so {@code mLoadedVideoId} is the room's current video. */
@@ -299,6 +311,134 @@ public class JukeboxColdStartDriftCatchUpTest {
         assertEquals("roomPos -1 must not seek: " + seeks, 0, seeks.size());
         assertEquals(-1L, room.getRoomPositionMs(V1));
         assertEquals(0, countLogs("JukeboxPopup", "seeking once to room position "));
+    }
+
+    /**
+     * No {@code startedAt}: the room position is {@code -1}. The playhead sits
+     * more than 1s away from {@code -1}, so dropping the {@code roomPos < 0}
+     * guard would seek to {@code -1}. The first play must not seek.
+     */
+    @Test
+    public void unknownRoomPositionFarFromThePlayheadDoesNotSeek() throws Exception {
+        long serverNow = SERVER_EPOCH_MS + ROOM_POS_MS;
+        snapshot("s1", V1, null, serverNow, false, null, DURATION_MS);
+        assertEquals(-1L, room.getRoomPositionMs(V1));
+        loadRoomSong();
+        playerPos[0] = ROOM_POS_MS;
+        assertTrue("the playhead must be more than 1s from -1",
+                Math.abs(-1L - playerPos[0]) > 1_000L);
+
+        wired.onPlay();
+
+        assertEquals("roomPos -1 must not seek to -1: " + seeks, 0, seeks.size());
+        assertEquals(-1L, room.getRoomPositionMs(V1));
+        assertEquals(0, countLogs("JukeboxPopup", "seeking once to room position "));
+    }
+
+    /**
+     * Song A loads and its first play consumes the one-shot. Song B then loads
+     * with more than 1s of drift. B's first play seeks once, to B's room
+     * position. Removing the reset in {@code setLoadedVideoId} would leave A's
+     * one-shot set and B would not seek.
+     */
+    @Test
+    public void nextSongAfterConsumedCatchUpSeeksOnceToTheNewRoomPosition() throws Exception {
+        playingSnapshot();
+        loadRoomSong();
+        parkBehind(DRIFT_BEHIND_MS);
+
+        wired.onPlay();
+        assertEquals("song A consumes its one-shot seek: " + seeks, 1, seeks.size());
+        long seekA = seeks.get(0);
+        seeks.clear();
+        ShadowLog.clear();
+
+        // A different room position from A's, so a leftover seek to A cannot pass.
+        // Do not idle: A's heartbeat is already posted, and the resume check is
+        // not what re-arms the one-shot. Loading B is.
+        final long roomPosB = 50_000L;
+        long startedAt = SERVER_EPOCH_MS;
+        postState("s2", V2, startedAt, startedAt + roomPosB, false, null, DURATION_MS);
+        assertEquals(V2, room.getCurrentVideoId());
+        wired.onVideoLoaded(Video.from(V2));
+        assertEquals("song B must be the loaded room song", V2, loadedVideoId());
+        long roomBefore = room.getRoomPositionMs(V2);
+        assertTrue("song B's room position must be known (got " + roomBefore + ")",
+                roomBefore >= DRIFT_BEHIND_MS);
+        playerPos[0] = roomBefore - DRIFT_BEHIND_MS;
+        assertTrue(Math.abs(roomBefore - playerPos[0]) > 1_000L);
+
+        wired.onPlay();
+
+        assertEquals("song B's first play must seek exactly once: " + seeks, 1, seeks.size());
+        long seekB = seeks.get(0);
+        long roomAfter = room.getRoomPositionMs(V2);
+        assertEquals("the seek target is B's room position", roomAfter, seekB);
+        assertTrue("B's seek (" + seekB + ") is not A's leftover seek (" + seekA + ")",
+                seekB != seekA);
+        assertTrue(seekB >= roomBefore && seekB <= roomAfter);
+        assertEquals("one seek, one log line", 1,
+                countLogs("JukeboxPopup", "seeking once to room position "));
+    }
+
+    /**
+     * The room song is loaded, then the room's current song changes before the
+     * first play. That play must not seek. Replacing the loaded-equals-room
+     * check with {@code if (false)} would seek to the loaded song's position.
+     */
+    @Test
+    public void roomSongChangeBetweenLoadAndFirstPlayDoesNotSeek() throws Exception {
+        playingSnapshot();
+        loadRoomSong();
+        long roomPosA = parkBehind(DRIFT_BEHIND_MS);
+        assertTrue(Math.abs(roomPosA - playerPos[0]) > 1_000L);
+        assertEquals(V1, loadedVideoId());
+
+        // A "play" for B changes the room's current song and does not replace
+        // A's position snapshot. Leave the posted open/resume queued: idling
+        // it would clear the loaded marker before this first play.
+        t.msg("{\"t\":\"play\",\"song\":{\"songId\":\"s2\",\"videoId\":\"" + V2
+                + "\",\"title\":\"T s2\",\"durationMs\":null}}");
+        assertEquals(V2, room.getCurrentVideoId());
+        assertEquals("the loaded song is still A", V1, loadedVideoId());
+        long stillA = room.getRoomPositionMs(V1);
+        assertTrue("A's room position must still be known (got " + stillA + ")", stillA >= 0L);
+        assertEquals(-1L, room.getRoomPositionMs(V2));
+
+        wired.onPlay();
+
+        assertEquals("loaded A while the room says B must not seek: " + seeks, 0, seeks.size());
+        assertEquals(V1, loadedVideoId());
+        assertEquals(0, countLogs("JukeboxPopup", "seeking once to room position "));
+    }
+
+    /**
+     * The playhead is more than 1s ahead of the room. The first play seeks
+     * back to the room position. Dropping {@code Math.abs} would see a
+     * negative delta and not seek.
+     */
+    @Test
+    public void playheadAheadOfTheRoomSeeksBackOnce() throws Exception {
+        playingSnapshot();
+        loadRoomSong();
+        long roomBefore = room.getRoomPositionMs(V1);
+        assertTrue("room position must be known (got " + roomBefore + ")", roomBefore >= 0L);
+        playerPos[0] = roomBefore + DRIFT_BEHIND_MS;
+        assertTrue("the playhead must be more than 1s ahead",
+                playerPos[0] - roomBefore > 1_000L);
+
+        wired.onPlay();
+
+        assertEquals("a playhead 4.5s ahead must seek exactly once: " + seeks, 1, seeks.size());
+        long seek = seeks.get(0);
+        long roomAfter = room.getRoomPositionMs(V1);
+        assertEquals("the seek target is the room position recomputed on first play",
+                roomAfter, seek);
+        assertTrue("the seek must move the playhead back (" + playerPos[0] + " -> " + seek + ")",
+                seek < playerPos[0]);
+        assertTrue(seek >= roomBefore && seek <= roomAfter);
+        assertEquals("one seek, one log line", 1,
+                countLogs("JukeboxPopup", "seeking once to room position "));
     }
 
     @Test
