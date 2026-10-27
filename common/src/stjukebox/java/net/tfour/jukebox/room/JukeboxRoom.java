@@ -429,11 +429,16 @@ public final class JukeboxRoom {
 
     /** See {@link JukeboxRoomClient#songEnded(String)}. */
     public void songEnded(String videoId) {
+        songEnded(videoId, -1L);
+    }
+
+    /** See {@link JukeboxRoomClient#songEnded(String, long)}. {@code positionMs} is logged with the send. */
+    public void songEnded(String videoId, long positionMs) {
         JukeboxRoomClient client = mClient;
         if (client == null || !mActive) {
             return;
         }
-        client.songEnded(videoId);
+        client.songEnded(videoId, positionMs);
     }
 
     /** See {@link JukeboxRoomClient#reportPlaying(String, Integer, Integer, String)}. */

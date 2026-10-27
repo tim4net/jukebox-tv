@@ -160,6 +160,8 @@ public class JukeboxRoomClient {
     /** Song ids for which "ended" was already accepted by the socket. */
     private final Set<String> mEndedSentSongIds = new LinkedHashSet<>();
     private String mPendingEndSongId;
+    /** Playhead passed with the pending "ended", so a reconnect retry logs it. */
+    private long mPendingEndPositionMs = -1L;
     private boolean mAwaitPlayAfterReconnect;
 
     public JukeboxRoomClient(String origin, Transport transport, Http http, Scheduler scheduler,
@@ -245,6 +247,7 @@ public class JukeboxRoomClient {
         mTransport.close();
         clearSongLocked();
         mPendingEndSongId = null;
+        mPendingEndPositionMs = -1L;
         mAwaitPlayAfterReconnect = false;
         notifyStatusLocked("Stopped");
     }
@@ -259,8 +262,13 @@ public class JukeboxRoomClient {
      * song's videoId and "ended" hasn't been sent for it yet. If the socket is down, the
      * ended songId is remembered and "ended" is sent after reconnect when the server's
      * post-ack "play" is still for that same songId. Never sends "ended" twice per songId.
+     * {@code positionMs} is the playhead logged with the send ({@code -1} when unknown).
      */
     public synchronized void songEnded(String videoId) {
+        songEnded(videoId, -1L);
+    }
+
+    public synchronized void songEnded(String videoId, long positionMs) {
         if (!mRunning || mCurrentSongId == null) {
             return;
         }
@@ -270,8 +278,9 @@ public class JukeboxRoomClient {
         if (mEndedSentSongIds.contains(mCurrentSongId)) {
             return;
         }
-        if (!sendEndedLocked(mCurrentSongId, mCurrentVideoId)) {
+        if (!sendEndedLocked(mCurrentSongId, mCurrentVideoId, positionMs)) {
             mPendingEndSongId = mCurrentSongId;
+            mPendingEndPositionMs = positionMs;
         }
     }
 
@@ -632,10 +641,12 @@ public class JukeboxRoomClient {
         if (mAwaitPlayAfterReconnect) {
             mAwaitPlayAfterReconnect = false;
             String endedSongId = mPendingEndSongId;
+            long endedPositionMs = mPendingEndPositionMs;
             mPendingEndSongId = null;
+            mPendingEndPositionMs = -1L;
             if (songId.equals(endedSongId)) {
                 // The server never saw our "ended" (socket was down): advance now.
-                sendEndedLocked(songId, message.getVideoId());
+                sendEndedLocked(songId, message.getVideoId(), endedPositionMs);
                 return;
             }
             // Otherwise the server already advanced on its own; drop the pending end.
@@ -699,6 +710,7 @@ public class JukeboxRoomClient {
         mCode = null;
         clearSongLocked();
         mPendingEndSongId = null;
+        mPendingEndPositionMs = -1L;
         mAwaitPlayAfterReconnect = false;
         if (mRunning) {
             notifyStatusLocked("Reconnecting…");
@@ -721,10 +733,18 @@ public class JukeboxRoomClient {
         return mRunning && mCurrentSongId != null && videoId != null && videoId.equals(mCurrentVideoId);
     }
 
-    /** @return false when the socket did not accept the message (caller may retry). */
-    private boolean sendEndedLocked(String songId, String videoId) {
+    /**
+     * @return false when the socket did not accept the message (caller may retry).
+     *         true when the send was accepted, already sent, or refused because
+     *         {@code videoId} is null or not a real video id — a refused id is
+     *         never retried and never put on the wire.
+     */
+    private boolean sendEndedLocked(String songId, String videoId, long positionMs) {
         if (mEndedSentSongIds.contains(songId)) {
             return true; // never send ended twice for one songId
+        }
+        if (!JukeboxProtocol.isValidVideoId(videoId)) {
+            return true; // never send "ended" with a null or malformed video id
         }
         if (!mTransport.send(JukeboxProtocol.ended(mToken, songId, videoId))) {
             return false;
@@ -735,6 +755,7 @@ public class JukeboxRoomClient {
             it.next();
             it.remove();
         }
+        JukeboxLog.i(LOG_TAG, "ended sent videoId=" + videoId + " positionMs=" + positionMs);
         return true;
     }
 

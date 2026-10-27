@@ -38,9 +38,13 @@ public class JukeboxJoinFocusTest {
 
     @After
     public void tearDown() throws Exception {
+        // Stop the room, drain anything it posted, then drop the singleton so a
+        // later test's idle() cannot observe a room this screen started.
+        Shadows.shadowOf(org.robolectric.RuntimeEnvironment.getApplication().getMainLooper()).idle();
         JukeboxRoom room = JukeboxRoom.instance(
                 org.robolectric.RuntimeEnvironment.getApplication());
         room.stop();
+        Shadows.shadowOf(org.robolectric.RuntimeEnvironment.getApplication().getMainLooper()).idle();
         resetRoom();
     }
 

@@ -40,11 +40,18 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:focusedByDefault="true"
+            android:minWidth="48dp"
+            android:minHeight="48dp"
             android:fontFamily="monospace"
             android:letterSpacing="0.3"
             android:textColor="#ffffff"
             android:textSize="64sp"
-            android:textStyle="bold" />
+            android:textStyle="bold">
+            <requestFocus />
+        </TextView>
 
         <TextView
             android:id="@+id/jukebox_hint"
@@ -86,8 +93,6 @@
             android:paddingStart="32dp"
             android:paddingEnd="32dp"
             android:text="@string/jukebox_browse"
-            android:textSize="20sp">
-            <requestFocus />
-        </Button>
+            android:textSize="20sp" />
     </LinearLayout>
 </LinearLayout>

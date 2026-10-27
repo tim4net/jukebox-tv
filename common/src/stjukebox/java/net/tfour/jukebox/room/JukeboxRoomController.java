@@ -35,6 +35,12 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
      * must not be treated as stale.
      */
     private static final long LOAD_IN_FLIGHT_TIMEOUT_MS = 15_000;
+    /**
+     * "ended" is a real end of the room song only when the playhead is inside
+     * this window of a known duration (or past it). A period-transition during
+     * reopen reports onPlayEnd mid-song; that must not advance the room.
+     */
+    private static final long END_REACHED_MARGIN_MS = 2_000L;
 
     private Handler mHandler;
     private boolean mHeartbeatRunning;
@@ -183,9 +189,11 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             return;
         } else if (beginReopen(roomVideoId)) {
             // Mismatch, and this room video is not the one we're already opening.
-            // The player substituted/kept a non-room video: re-open the exact room id.
+            // The player substituted/kept a non-room video: re-open the exact room id
+            // at the room position when one is known (issue #24).
             openRoomVideo(roomVideoId, "non-room video loaded: player=" + loadedId
-                    + " roomVid=" + roomVideoId + " song=" + room.getRoom());
+                    + " roomVid=" + roomVideoId + " song=" + room.getRoom(),
+                    pendingPosMs(roomVideoId));
             return;
         } else {
             // Already requested this room video, or the 2-attempt cap is hit. Never
@@ -243,17 +251,35 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
 
     @Override
     public void onPlayEnd() {
+        if (!JukeboxRoom.isRoomActive()) {
+            stopHeartbeat();
+            dismissPopupOverlay();
+            return;
+        }
+        // ExoPlayer reports onPlayEnd for a period transition during reopen/reload
+        // while the playhead is still mid-song (issue #25). Sending "ended" then
+        // makes the server drop the song. Only a real end of the current room
+        // song's video id may be reported, and a rejected end must not clear the
+        // in-flight load or the ended-guard.
+        PlaybackView player = getPlayer();
+        Video video = player != null && player.getVideo() != null ? player.getVideo() : getVideo();
+        String videoId = video != null ? video.videoId : null;
+        long positionMs = player != null ? player.getPositionMs() : -1L;
+        long durationMs = player != null ? player.getDurationMs() : -1L;
+        Context ctx = getContext();
+        String roomVideoId = ctx != null ? JukeboxRoom.instance(ctx).getCurrentVideoId() : null;
+        boolean reachedEnd = durationMs > 0L && positionMs >= durationMs - END_REACHED_MARGIN_MS;
+        if (!JukeboxProtocol.isValidVideoId(videoId) || !videoId.equals(roomVideoId) || !reachedEnd) {
+            JukeboxLog.i(LOG_TAG, "play end ignored: videoId=" + videoId
+                    + " positionMs=" + positionMs + " durationMs=" + durationMs);
+            return;
+        }
         stopHeartbeat();
         // Playback of the room song is over: drop any pop-up bubbles.
         dismissPopupOverlay();
-        if (!JukeboxRoom.isRoomActive()) {
-            return;
-        }
-        // Only tell the room. It sends "ended"; the following "play" opens the next song.
-        Video video = getPlayer() != null && getPlayer().getVideo() != null ? getPlayer().getVideo() : getVideo();
-        if (video != null && video.videoId != null && getContext() != null) {
-            mEndedVideoId = video.videoId;
-            JukeboxRoom.instance(getContext()).songEnded(video.videoId);
+        mEndedVideoId = videoId;
+        if (ctx != null) {
+            JukeboxRoom.instance(ctx).songEnded(videoId, positionMs);
         }
         mLoadedVideoId = null;
         mLoadingVideoId = null;
@@ -370,15 +396,11 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         mCapLoggedVideoId = null;
     }
 
-    /** Pauses whatever is loaded and (re)opens the exact room videoId (bounded by {@link #beginReopen}). */
-    private void openRoomVideo(String roomVideoId, String reason) {
-        openRoomVideo(roomVideoId, reason, -1L);
-    }
-
     /**
      * Pauses whatever is loaded and (re)opens the exact room videoId (bounded by
      * {@link #beginReopen}). {@code posMs} (>= 0) becomes the opened video's
-     * pending position — the cheap seek hint for a resume after return (-1: none).
+     * pending position — the room position when it is known, otherwise the last
+     * player tick (-1: neither).
      */
     private void openRoomVideo(String roomVideoId, String reason, long posMs) {
         JukeboxLog.i(LOG_TAG, reason + ": opening exact room videoId " + roomVideoId
@@ -632,21 +654,26 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
 
     /**
      * Pending seek position for a resume of {@code videoId}, or -1 when none is
-     * known. The locally observed/reported position wins (the TV itself was
-     * playing); on a cold start (issue #6) no local memory exists yet, so the
-     * room-state estimate takes over — the "state" snapshot's song startedAt
-     * plus server time elapsed, exactly what the play-path open seeks to.
+     * known. The room-state estimate wins whenever it names this videoId
+     * (issue #24): serverNow − startedAt, frozen at pausedAt while paused,
+     * plus elapsed time since the snapshot. The player's own last tick is only
+     * the fallback when that estimate is unknown (no snapshot, idle, or no
+     * startedAt) — a cold start with no local memory still seeks via the
+     * play-path open, which uses the same estimate.
      */
     private long pendingPosMs(String roomVideoId) {
         if (roomVideoId == null) {
             return -1L;
         }
-        if (roomVideoId.equals(mLastPosVideoId) && mLastPosMs >= 0) {
-            return mLastPosMs;
-        }
         Context ctx = getContext();
         if (ctx != null && JukeboxRoom.isRoomActive()) {
-            return JukeboxRoom.instance(ctx).getRoomPositionMs(roomVideoId);
+            long roomPos = JukeboxRoom.instance(ctx).getRoomPositionMs(roomVideoId);
+            if (roomPos >= 0) {
+                return roomPos;
+            }
+        }
+        if (roomVideoId.equals(mLastPosVideoId) && mLastPosMs >= 0) {
+            return mLastPosMs;
         }
         return -1L;
     }

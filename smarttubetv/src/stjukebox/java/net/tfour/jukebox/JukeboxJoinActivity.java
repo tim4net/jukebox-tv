@@ -121,6 +121,34 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
 
         // The room is started in onStart(): onCreate is always followed by onStart,
         // and starting here as well would race the two back-to-back start() calls.
+        // Focus is applied in onResume / onWindowFocusChanged, after layout, so the
+        // room code beats BROWSE YOUTUBE.
+    }
+
+    /**
+     * Puts D-pad focus on the room code. Called from resume and again when the
+     * window actually gains focus, because a layout pass in between assigns
+     * focus to the first sized focusable (the browse button) otherwise.
+     * The posted request runs after that layout. No-op before the layout exists.
+     */
+    private void focusRoomCode() {
+        if (mCodeView == null) {
+            return;
+        }
+        mCodeView.requestFocus();
+        mCodeView.post(() -> {
+            if (mCodeView != null) {
+                mCodeView.requestFocus();
+            }
+        });
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            focusRoomCode();
+        }
     }
 
     @Override
@@ -235,6 +263,10 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         // single mistimed check (the 2465 failure) can't leave the room silent.
         startResumeRetry("onResume");
         updateDefaultFocus();
+        // Last focus request of onResume, so BROWSE YOUTUBE cannot keep the default.
+        if (!mRoomSongActive) {
+            focusRoomCode();
+        }
     }
 
     @Override
