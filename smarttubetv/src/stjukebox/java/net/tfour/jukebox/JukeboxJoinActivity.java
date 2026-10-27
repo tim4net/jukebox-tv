@@ -251,9 +251,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
             return;
         }
         View target = findViewById(defaultFocusId(isRoomPlaying()));
-        if (target != null && (mBrowseView == null || !mBrowseView.hasFocus())) {
-            target.requestFocus();
-        }
+        if (!mBrowseView.hasFocus()) target.requestFocus();
     }
 
     @Override
@@ -349,10 +347,10 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
 
     /**
      * Arms the QR join action while the room is playing. A state update moves
-     * focus only when playback starts, or back to Browse when it stops while
-     * the QR held focus. Resume restores {@link #defaultFocusId(boolean)}
-     * itself, and does not pull focus off Browse. No-op before the join UI
-     * exists (a forwarded launch has no views).
+     * focus only when playback starts. The framework (not this method) moves
+     * focus back to Browse when the QR stops being focusable. Resume restores
+     * {@link #defaultFocusId(boolean)} itself, and does not pull focus off
+     * Browse. No-op before the join UI exists (a forwarded launch has no views).
      */
     private void applyJoinFocus() {
         if (mQrView == null) {
@@ -364,10 +362,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         mQrView.setFocusable(roomPlaying);
         mQrView.setClickable(roomPlaying);
 
-        View target = findViewById(defaultFocusId(true));
-        if (target != null && becamePlaying) {
-            target.requestFocus();
-        }
+        if (becamePlaying) mQrView.requestFocus();
     }
 
     @Override
