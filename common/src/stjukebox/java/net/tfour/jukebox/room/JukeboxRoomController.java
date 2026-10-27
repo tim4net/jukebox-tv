@@ -30,13 +30,28 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
      * as "a load of the room video is on its way". The engine load of an openVideo
      * settles within seconds; a marker older than this is leftover state (e.g. the
      * engine was released mid-load while the app sat backgrounded) and must never
-     * silence the room forever.
+     * silence the room forever. 15s, not shorter: a normal pending load
+     * ({@code onNewVideo} before the player activity has attached) is young and
+     * must not be treated as stale.
      */
     private static final long LOAD_IN_FLIGHT_TIMEOUT_MS = 15_000;
+    /**
+     * First {@link #onPlay()} after a load seeks when the playhead is farther
+     * than this from the room position. Nina 2488 cold start lands 4.3-4.9s
+     * behind because the open seek is computed at openVideo time and the first
+     * frame is 11-12s later.
+     */
+    private static final long COLD_START_DRIFT_MS = 1_000L;
 
     private Handler mHandler;
     private boolean mHeartbeatRunning;
     private String mLoadedVideoId;
+    /**
+     * True after the first {@link #onPlay()} catch-up check for the current
+     * {@link #mLoadedVideoId}. Cleared wherever that id is set or cleared, so
+     * each load gets one check. A later onPlay (pause/resume) does not seek.
+     */
+    private boolean mColdStartDriftCatchUpDone;
     private boolean mListening;
     private boolean mSuppressReports;
     /** Room videoId of the openVideo call currently on the stack. */
@@ -52,7 +67,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     private String mEndedVideoId;
     /** VideoId whose load is in flight (seen in onNewVideo, not yet onVideoLoaded). */
     private String mLoadingVideoId;
-    /** {@link SystemClock#uptimeMillis()} when {@link #mLoadingVideoId} was set; 0 while none. */
+    /** {@link SystemClock#elapsedRealtime()} when {@link #mLoadingVideoId} was set; 0 while none. */
     private long mLoadingSinceMs;
     /**
      * True while a room-song resume was deferred because the app went away (a
@@ -85,6 +100,9 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             PlaybackView player = getPlayer();
             Context ctx = getContext();
             if (!JukeboxRoom.isRoomActive() || mLoadedVideoId == null || player == null || ctx == null) {
+                if (player == null) {
+                    JukeboxLog.i(LOG_TAG, "heartbeat stopped: player==null");
+                }
                 stopHeartbeat();
                 return;
             }
@@ -131,7 +149,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         // "stale id of the released song" — only this can. Also drop a resume
         // check posted by onEngineReleased(): a new load is on its way.
         mLoadingVideoId = item != null ? item.videoId : null;
-        mLoadingSinceMs = mLoadingVideoId != null ? SystemClock.uptimeMillis() : 0L;
+        mLoadingSinceMs = mLoadingVideoId != null ? SystemClock.elapsedRealtime() : 0L;
         handler().removeCallbacks(mResumeCheck);
     }
 
@@ -177,13 +195,15 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
                 player.setPlayWhenReady(false);
             }
             stopHeartbeat();
-            mLoadedVideoId = null;
+            setLoadedVideoId(null);
             return;
         } else if (beginReopen(roomVideoId)) {
             // Mismatch, and this room video is not the one we're already opening.
-            // The player substituted/kept a non-room video: re-open the exact room id.
+            // The player substituted/kept a non-room video: re-open the exact room id
+            // at the room position when one is known (issue #24).
             openRoomVideo(roomVideoId, "non-room video loaded: player=" + loadedId
-                    + " roomVid=" + roomVideoId + " song=" + room.getRoom());
+                    + " roomVid=" + roomVideoId + " song=" + room.getRoom(),
+                    pendingPosMs(roomVideoId));
             return;
         } else {
             // Already requested this room video, or the 2-attempt cap is hit. Never
@@ -195,23 +215,31 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
                 player.setPlayWhenReady(false);
             }
             stopHeartbeat();
-            mLoadedVideoId = null;
+            setLoadedVideoId(null);
             return;
         }
         if (loadedId == null) {
             return;
         }
-        mLoadedVideoId = loadedId;
+        setLoadedVideoId(loadedId);
+        // A paused snapshot stays paused: do not start playback on load.
+        // ensureRoomSongPlaying is what unpauses, and only once a later
+        // snapshot says the song is playing.
+        boolean holdPaused = room.isSnapshotPaused(loadedId);
         if (player != null) {
-            player.setPlayWhenReady(true);
+            player.setPlayWhenReady(!holdPaused);
         }
         Integer durationSec = player != null ? toSec(player.getDurationMs()) : null;
         if (durationSec == null && item != null && item.getDurationMs() > 0) {
             durationSec = (int) (item.getDurationMs() / 1000);
         }
         Integer positionSec = player != null ? toSec(player.getPositionMs()) : null;
-        room.reportPlaying(loadedId, durationSec, positionSec, "playing");
-        startHeartbeat();
+        room.reportPlaying(loadedId, durationSec, positionSec, holdPaused ? "paused" : "playing");
+        if (holdPaused) {
+            stopHeartbeat();
+        } else {
+            startHeartbeat();
+        }
     }
 
     @Override
@@ -219,10 +247,51 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         if (!JukeboxRoom.isRoomActive()) {
             return;
         }
+        catchUpColdStartDriftOnce();
         if (mLoadedVideoId != null) {
             startHeartbeat();
         }
         reportState("playing");
+    }
+
+    /**
+     * First {@link #onPlay()} after this load of the room song. Recompute the
+     * room position (it has moved since openVideo) and seek once when the
+     * playhead is more than {@link #COLD_START_DRIFT_MS} off. A paused room and
+     * an unknown position ({@code -1}) do not seek. The one-shot flag blocks a
+     * later onPlay from seeking again.
+     */
+    private void catchUpColdStartDriftOnce() {
+        if (mColdStartDriftCatchUpDone || mLoadedVideoId == null) {
+            return;
+        }
+        Context ctx = getContext();
+        PlaybackView player = getPlayer();
+        if (player == null) {
+            JukeboxLog.i(LOG_TAG, "cold-start drift skipped: player==null");
+            return;
+        }
+        if (ctx == null) {
+            return;
+        }
+        JukeboxRoom room = JukeboxRoom.instance(ctx);
+        if (!mLoadedVideoId.equals(room.getCurrentVideoId())) {
+            return;
+        }
+        mColdStartDriftCatchUpDone = true;
+        if (room.isSnapshotPaused(mLoadedVideoId)) {
+            return;
+        }
+        long roomPos = room.getRoomPositionMs(mLoadedVideoId);
+        if (roomPos < 0) {
+            return;
+        }
+        long playerPos = player.getPositionMs();
+        if (Math.abs(roomPos - playerPos) > COLD_START_DRIFT_MS) {
+            JukeboxLog.i(LOG_TAG, "cold-start drift " + (roomPos - playerPos) + "ms on " + mLoadedVideoId
+                    + ": seeking once to room position " + roomPos + "ms");
+            player.setPositionMs(roomPos);
+        }
     }
 
     @Override
@@ -233,27 +302,70 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
 
     @Override
     public void onPlayEnd() {
+        // The engine has stopped, including a rejected period-transition end.
+        // Progress must not keep ticking on any of these paths.
         stopHeartbeat();
-        // Playback of the room song is over: drop any pop-up bubbles.
-        dismissPopupOverlay();
         if (!JukeboxRoom.isRoomActive()) {
+            dismissPopupOverlay();
             return;
         }
-        // Only tell the room. It sends "ended"; the following "play" opens the next song.
-        Video video = getPlayer() != null && getPlayer().getVideo() != null ? getPlayer().getVideo() : getVideo();
-        if (video != null && video.videoId != null && getContext() != null) {
-            mEndedVideoId = video.videoId;
-            JukeboxRoom.instance(getContext()).songEnded(video.videoId);
+        // ExoPlayer reports onPlayEnd for a period transition during reopen/reload
+        // while the playhead is still mid-song (issue #25). Sending "ended" then
+        // makes the server drop the song. Only a real end of the current room
+        // song's video id may be reported, and a rejected end must not clear the
+        // in-flight load or the ended-guard. A player duration of 0 (or unset)
+        // falls back to the room snapshot's duration; when both are unknown the
+        // end is accepted.
+        PlaybackView player = getPlayer();
+        Video video = player != null && player.getVideo() != null ? player.getVideo() : getVideo();
+        String videoId = video != null ? video.videoId : null;
+        if (player == null) {
+            JukeboxLog.i(LOG_TAG, "play end: player==null");
         }
-        mLoadedVideoId = null;
+        long positionMs = player != null ? player.getPositionMs() : -1L;
+        long playerDurMs = player != null ? player.getDurationMs() : -1L;
+        Context ctx = getContext();
+        JukeboxRoom room = ctx != null ? JukeboxRoom.instance(ctx) : null;
+        String roomVideoId = room != null ? room.getCurrentVideoId() : null;
+        boolean isRoomVideo = JukeboxProtocol.isValidVideoId(videoId) && videoId.equals(roomVideoId);
+        long snapDurMs = room != null ? room.getSnapshotDurationMs(videoId) : -1L;
+        if (!shouldReportEnded(isRoomVideo, positionMs, playerDurMs, snapDurMs)) {
+            JukeboxLog.i(LOG_TAG, "play end ignored: videoId=" + videoId
+                    + " positionMs=" + positionMs + " durationMs=" + playerDurMs);
+            return;
+        }
+        // Playback of the room song is over: drop any pop-up bubbles.
+        dismissPopupOverlay();
+        mEndedVideoId = videoId;
+        if (room != null) {
+            room.songEnded(videoId, positionMs);
+        }
+        setLoadedVideoId(null);
         mLoadingVideoId = null;
         mLoadingSinceMs = 0L;
+    }
+
+    /**
+     * Whether {@link #onPlayEnd()} should send "ended". A positive player
+     * duration wins. Zero or negative falls back to the room snapshot's
+     * duration. When both are unknown, a room video accepts the end. A
+     * video that is not the room's current song never reports.
+     */
+    static boolean shouldReportEnded(boolean isRoomVideo, long posMs, long playerDurMs, long snapDurMs) {
+        if (!isRoomVideo) {
+            return false;
+        }
+        long durMs = playerDurMs > 0L ? playerDurMs : snapDurMs;
+        if (durMs <= 0L) {
+            return true;
+        }
+        return JukeboxRoomClient.isAtEnd(posMs, durMs);
     }
 
     @Override
     public void onEngineReleased() {
         stopHeartbeat();
-        mLoadedVideoId = null;
+        setLoadedVideoId(null);
         mLoadingVideoId = null;
         mLoadingSinceMs = 0L;
         resetReopen();
@@ -360,22 +472,27 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         mCapLoggedVideoId = null;
     }
 
-    /** Pauses whatever is loaded and (re)opens the exact room videoId (bounded by {@link #beginReopen}). */
-    private void openRoomVideo(String roomVideoId, String reason) {
-        openRoomVideo(roomVideoId, reason, -1L);
+    /**
+     * Sets or clears the loaded room video and arms a fresh one-shot catch-up.
+     * Every assignment of {@link #mLoadedVideoId} goes through here.
+     */
+    private void setLoadedVideoId(String videoId) {
+        mLoadedVideoId = videoId;
+        mColdStartDriftCatchUpDone = false;
     }
 
     /**
      * Pauses whatever is loaded and (re)opens the exact room videoId (bounded by
      * {@link #beginReopen}). {@code posMs} (>= 0) becomes the opened video's
-     * pending position — the cheap seek hint for a resume after return (-1: none).
+     * pending position — the room position when it is known, otherwise the last
+     * player tick (-1: neither).
      */
     private void openRoomVideo(String roomVideoId, String reason, long posMs) {
         JukeboxLog.i(LOG_TAG, reason + ": opening exact room videoId " + roomVideoId
                 + " (attempt " + mReopenAttempts + ", posMs=" + posMs + ")");
         mLastResumeLog = null; // the next decision may repeat a line: log it fresh
         stopHeartbeat();
-        mLoadedVideoId = null;
+        setLoadedVideoId(null);
         mSuppressReports = true;
         try {
             PlaybackView player = getPlayer();
@@ -497,7 +614,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             logResume(via, "resume: loaded marker " + mLoadedVideoId + " is stale ("
                     + (hasLiveEngine() ? "room song changed" : "engine released/no live player")
                     + "): resuming the room song");
-            mLoadedVideoId = null;
+            setLoadedVideoId(null);
             mLoadingVideoId = null;
             mLoadingSinceMs = 0L;
             resetReopen();
@@ -525,14 +642,20 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             return false;
         }
         if (roomVideoId.equals(mLoadingVideoId)) {
+            // A young marker is a normal pending load. onNewVideo sets it from
+            // inside openVideo, before the player activity has attached
+            // (JukeboxRoom opens the video before it notifies listeners, and
+            // that resume must already see the load). "No player yet" is that
+            // window, not a failed open — treating it as stale opens the same
+            // video a second time and cancels the load. A launch that never
+            // started a player clears the marker itself (see
+            // clearLoadThatNeverStarted). Only age past the timeout is stale.
             if (isLoadInFlight()) {
-                // The engine (re)load of the room video is already on its way.
                 logResume(via, "resume skipped: load of " + roomVideoId + " in flight");
                 return false;
             }
-            logResume(via, "resume: in-flight marker " + roomVideoId
-                    + " is stale (no load finished within " + LOAD_IN_FLIGHT_TIMEOUT_MS
-                    + "ms): resuming the room song");
+            logResume(via, "resume: in-flight marker " + roomVideoId + " is stale (no load finished within "
+                    + LOAD_IN_FLIGHT_TIMEOUT_MS + "ms): resuming the room song");
             mLoadingVideoId = null;
             mLoadingSinceMs = 0L;
         }
@@ -587,15 +710,25 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     /** True while the in-flight load marker is young enough to still be a real load. */
     private boolean isLoadInFlight() {
         long since = mLoadingSinceMs;
-        return since != 0L && SystemClock.uptimeMillis() - since <= LOAD_IN_FLIGHT_TIMEOUT_MS;
+        return since != 0L && SystemClock.elapsedRealtime() - since <= LOAD_IN_FLIGHT_TIMEOUT_MS;
+    }
+
+    /**
+     * Drops the in-flight marker when {@code openVideo} did not start a player
+     * (the launch gate blocked it). {@code onNewVideo} has already set the
+     * marker, and no {@code onVideoLoaded} will ever clear it. A young marker
+     * must not be cleared just because the player activity has not attached
+     * yet — that is a normal pending load.
+     */
+    void clearLoadThatNeverStarted() {
+        mLoadingVideoId = null;
+        mLoadingSinceMs = 0L;
     }
 
     /**
      * Remembers the last observed playback position of {@code videoId} (>= 0),
      * so a resume after return can seek the reopened song back to the room's
-     * position (cheap: no protocol round trip — the "state" snapshot carries
-     * no position/startedAt field, so the last locally observed/reported
-     * progress is the only source).
+     * position (cheap: no protocol round trip).
      */
     private void rememberProgress(String videoId, long posMs) {
         if (videoId != null && posMs >= 0) {
@@ -604,9 +737,41 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         }
     }
 
-    /** Pending seek position for a resume of {@code videoId}, or -1 when none is known. */
+    /**
+     * Pending seek position for a resume of {@code videoId}, or -1 when none is
+     * known. The room-state estimate wins whenever it names this videoId
+     * (issue #24): serverNow − startedAt, frozen at pausedAt while paused,
+     * plus elapsed time since the snapshot. The player's own last tick is only
+     * the fallback when that estimate is unknown (no snapshot, idle, or no
+     * startedAt) — and that tick is dropped when it is inside the end margin
+     * of a known duration (player duration, else the snapshot's), the same
+     * {@link JukeboxRoomClient#isAtEnd} rule as the room estimate. A cold
+     * start with no local memory still seeks via the play-path open, which
+     * uses the same estimate.
+     */
     private long pendingPosMs(String roomVideoId) {
-        if (roomVideoId != null && roomVideoId.equals(mLastPosVideoId) && mLastPosMs >= 0) {
+        if (roomVideoId == null) {
+            return -1L;
+        }
+        Context ctx = getContext();
+        JukeboxRoom room = ctx != null && JukeboxRoom.isRoomActive() ? JukeboxRoom.instance(ctx) : null;
+        if (room != null) {
+            long roomPos = room.getRoomPositionMs(roomVideoId);
+            if (roomPos >= 0) {
+                return roomPos;
+            }
+        }
+        if (roomVideoId.equals(mLastPosVideoId) && mLastPosMs >= 0) {
+            long durMs = -1L;
+            PlaybackView player = getPlayer();
+            if (player != null && player.getDurationMs() > 0L) {
+                durMs = player.getDurationMs();
+            } else if (room != null) {
+                durMs = room.getSnapshotDurationMs(roomVideoId);
+            }
+            if (JukeboxRoomClient.isAtEnd(mLastPosMs, durMs)) {
+                return -1L;
+            }
             return mLastPosMs;
         }
         return -1L;
@@ -654,6 +819,10 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
      * restore can load it paused (e.g. a saved playWhenReady=false applied on
      * load), which used to require a DPAD_CENTER press. While a room song is
      * active the TV is a listener — the room's song plays.
+     *
+     * <p>A snapshot that is still paused is the host's pause. Leave the player
+     * paused at {@code pausedAt - startedAt}. This method is the unpause: it
+     * runs again on the next view resume, after a snapshot that is not paused.
      */
     private void ensureRoomSongPlaying() {
         if (!JukeboxRoom.isRoomActive() || mSuppressReports) {
@@ -661,12 +830,20 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         }
         PlaybackView player = getPlayer();
         Context ctx = getContext();
-        if (player == null || ctx == null) {
+        if (player == null) {
+            JukeboxLog.i(LOG_TAG, "room song play skipped: player==null");
             return;
         }
-        String roomVideoId = JukeboxRoom.instance(ctx).getCurrentVideoId();
+        if (ctx == null) {
+            return;
+        }
+        JukeboxRoom room = JukeboxRoom.instance(ctx);
+        String roomVideoId = room.getCurrentVideoId();
         if (roomVideoId == null || !roomVideoId.equals(mLoadedVideoId)) {
             return; // nothing loaded, or not the room's song
+        }
+        if (room.isSnapshotPaused(roomVideoId)) {
+            return; // host paused this song; view resume must not unpause it
         }
         if (!player.getPlayWhenReady()) {
             JukeboxLog.i(LOG_TAG, "room song " + roomVideoId + " loaded but paused on view resume: playing");

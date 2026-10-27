@@ -23,7 +23,7 @@ import java.util.Set;
  * Server -> client:
  *   {"t":"bridge-ack"}
  *   {"t":"play","song":{"songId":S,"videoId":V,"title":T,"durationMs":N|null}}
- *   {"t":"state","room":R,"nowPlaying":{...}|null,"queue":[...],"listeners":N[,"popups":B|"settings":{"popups":B}]}
+ *   {"t":"state","room":R,"now":NOW,"nowPlaying":{"songId":S,"videoId":V,"title":T,"startedAt":N,"paused":B,"pausedAt":N,"durationMs":N}|null,"queue":[...],"listeners":N[,"popups":B|"settings":{"popups":B}]}
  *   {"t":"pong","c":N,"s":N}
  *   {"t":"error","code":C}
  *   {"t":"closed","room":R}
@@ -151,6 +151,10 @@ public final class JukeboxProtocol {
             String nowPlayingTitle = null;
             String nowPlayingSongId = null;
             String nowPlayingVideoId = null;
+            Long nowPlayingStartedAtMs = null;
+            Long nowPlayingPausedAtMs = null;
+            Long nowPlayingDurationMs = null;
+            boolean nowPlayingPaused = false;
             // Explicit null means the room is idle. An absent field is not that signal.
             boolean nowPlayingNull = json.has("nowPlaying") && json.isNull("nowPlaying");
             JSONObject nowPlaying = json.optJSONObject("nowPlaying");
@@ -158,7 +162,13 @@ public final class JukeboxProtocol {
                 nowPlayingTitle = stringify(nowPlaying, "title");
                 nowPlayingSongId = stringify(nowPlaying, "songId");
                 nowPlayingVideoId = stringify(nowPlaying, "videoId");
+                nowPlayingStartedAtMs = millis(nowPlaying, "startedAt");
+                nowPlayingPausedAtMs = millis(nowPlaying, "pausedAt");
+                nowPlayingDurationMs = millis(nowPlaying, "durationMs");
+                nowPlayingPaused = Boolean.TRUE.equals(nowPlaying.opt("paused"));
             }
+            // Server clock carried by every "state" broadcast (null when absent).
+            Long serverNowMs = millis(json, "now");
             String errorCode = stringify(json, "code");
             boolean popupsEnabled = Boolean.TRUE.equals(json.opt("popups"));
             JSONObject settings = json.optJSONObject("settings");
@@ -167,7 +177,8 @@ public final class JukeboxProtocol {
             }
             return new Message(type, songId, videoId, title, durationMs, listeners,
                     nowPlayingTitle, nowPlayingSongId, nowPlayingVideoId, nowPlayingNull,
-                    errorCode, popupsEnabled);
+                    errorCode, popupsEnabled, serverNowMs, nowPlayingStartedAtMs,
+                    nowPlayingPaused, nowPlayingPausedAtMs, nowPlayingDurationMs);
         } catch (JSONException e) {
             return unknown();
         }
@@ -325,8 +336,15 @@ public final class JukeboxProtocol {
         return value == null || value == JSONObject.NULL ? null : String.valueOf(value);
     }
 
+    /** Numeric field {@code key} of {@code json} in ms, or null when absent/not a number. */
+    private static Long millis(JSONObject json, String key) {
+        Object value = json.opt(key);
+        return value instanceof Number ? ((Number) value).longValue() : null;
+    }
+
     private static Message unknown() {
-        return new Message(TYPE_UNKNOWN, null, null, null, null, -1, null, null, null, false, null, false);
+        return new Message(TYPE_UNKNOWN, null, null, null, null, -1, null, null, null, false, null, false,
+                null, null, false, null, null);
     }
 
     /**
@@ -363,11 +381,17 @@ public final class JukeboxProtocol {
         private final boolean mNowPlayingNull;
         private final String mErrorCode;
         private final boolean mPopupsEnabled;
+        private final Long mServerNowMs;
+        private final Long mNowPlayingStartedAtMs;
+        private final boolean mNowPlayingPaused;
+        private final Long mNowPlayingPausedAtMs;
+        private final Long mNowPlayingDurationMs;
 
         private Message(String type, String songId, String videoId, String title, Long durationMs,
                         int listeners, String nowPlayingTitle, String nowPlayingSongId,
                         String nowPlayingVideoId, boolean nowPlayingNull, String errorCode,
-                        boolean popupsEnabled) {
+                        boolean popupsEnabled, Long serverNowMs, Long nowPlayingStartedAtMs,
+                        boolean nowPlayingPaused, Long nowPlayingPausedAtMs, Long nowPlayingDurationMs) {
             mType = type;
             mSongId = songId;
             mVideoId = videoId;
@@ -380,6 +404,11 @@ public final class JukeboxProtocol {
             mNowPlayingNull = nowPlayingNull;
             mErrorCode = errorCode;
             mPopupsEnabled = popupsEnabled;
+            mServerNowMs = serverNowMs;
+            mNowPlayingStartedAtMs = nowPlayingStartedAtMs;
+            mNowPlayingPaused = nowPlayingPaused;
+            mNowPlayingPausedAtMs = nowPlayingPausedAtMs;
+            mNowPlayingDurationMs = nowPlayingDurationMs;
         }
 
         public String getType() {
@@ -437,6 +466,31 @@ public final class JukeboxProtocol {
          */
         public boolean isPopupsEnabled() {
             return mPopupsEnabled;
+        }
+
+        /** Server clock (epoch ms) carried by a "state" message, null when absent. */
+        public Long getServerNowMs() {
+            return mServerNowMs;
+        }
+
+        /** nowPlaying song start (epoch ms), null when absent. */
+        public Long getNowPlayingStartedAtMs() {
+            return mNowPlayingStartedAtMs;
+        }
+
+        /** True while the nowPlaying song is paused (frozen at {@link #getNowPlayingPausedAtMs()}). */
+        public boolean isNowPlayingPaused() {
+            return mNowPlayingPaused;
+        }
+
+        /** When the nowPlaying song was paused (epoch ms), null when absent/not paused. */
+        public Long getNowPlayingPausedAtMs() {
+            return mNowPlayingPausedAtMs;
+        }
+
+        /** nowPlaying song duration in ms, null when absent. */
+        public Long getNowPlayingDurationMs() {
+            return mNowPlayingDurationMs;
         }
     }
 }

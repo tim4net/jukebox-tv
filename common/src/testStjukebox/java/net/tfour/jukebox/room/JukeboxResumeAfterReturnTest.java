@@ -328,7 +328,7 @@ public class JukeboxResumeAfterReturnTest {
         loading.set(wired, V2);
         Field loadingSince = JukeboxRoomController.class.getDeclaredField("mLoadingSinceMs");
         loadingSince.setAccessible(true);
-        loadingSince.setLong(wired, SystemClock.uptimeMillis() - 60_000);
+        loadingSince.setLong(wired, SystemClock.elapsedRealtime() - 60_000);
 
         // Relaunch: the stale marker is logged and cleared, then the LATEST
         // (snapshot-sourced) room song opens exactly once.

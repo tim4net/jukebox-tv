@@ -1,5 +1,7 @@
 package net.tfour.jukebox.room;
 
+import android.os.SystemClock;
+
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -75,6 +77,22 @@ public class JukeboxRoomClient {
     private static final long INITIAL_BACKOFF_MS = 1_000;
     private static final long MAX_BACKOFF_MS = 30_000;
     private static final int MAX_REMEMBERED_SONGS = 64;
+    /**
+     * A position this close to {@code durationMs} (or past it) is unknown.
+     * Callers must not seek to the end. Same 2s as the web listen-along
+     * drift tolerance. The only end margin: {@link #isAtEnd} is what the
+     * room estimate, play-end, and the pending-seek fallback all use.
+     */
+    private static final long END_MARGIN_MS = 2_000L;
+
+    /**
+     * True when {@code posMs} is inside the last {@link #END_MARGIN_MS} of a
+     * known duration, or past it. A duration {@code <= 0} is unknown and is
+     * not the end.
+     */
+    static boolean isAtEnd(long posMs, long durationMs) {
+        return durationMs > 0L && posMs >= durationMs - END_MARGIN_MS;
+    }
 
     private final String mOrigin;
     private final Transport mTransport;
@@ -134,9 +152,26 @@ public class JukeboxRoomClient {
     private String mCurrentSongId;
     /** True while the current song id came from a "state" snapshot, not a "play". */
     private volatile boolean mSongFromState;
+    /**
+     * Room position of the song the latest "state" snapshot names (issue #6).
+     * One immutable record behind one volatile: a reader on the Android main
+     * thread never sees one snapshot's video id with another's startedAt or
+     * pausedAt. {@link RoomPosition#NONE} means unknown/idle.
+     */
+    private volatile RoomPosition mPosition = RoomPosition.NONE;
+    /**
+     * Test-only. Runs while a position record is being published, before that
+     * record is stored. Null in production. A reader here still sees the
+     * previous complete snapshot (the new video id is not yet visible). Not
+     * invoked on the clear path. Per instance, so one client's hook cannot
+     * change what another client publishes.
+     */
+    private volatile Runnable mDuringPositionPublishForTests;
     /** Song ids for which "ended" was already accepted by the socket. */
     private final Set<String> mEndedSentSongIds = new LinkedHashSet<>();
     private String mPendingEndSongId;
+    /** Playhead passed with the pending "ended", so a reconnect retry logs it. */
+    private long mPendingEndPositionMs = -1L;
     private boolean mAwaitPlayAfterReconnect;
 
     public JukeboxRoomClient(String origin, Transport transport, Http http, Scheduler scheduler,
@@ -222,6 +257,7 @@ public class JukeboxRoomClient {
         mTransport.close();
         clearSongLocked();
         mPendingEndSongId = null;
+        mPendingEndPositionMs = -1L;
         mAwaitPlayAfterReconnect = false;
         notifyStatusLocked("Stopped");
     }
@@ -236,8 +272,13 @@ public class JukeboxRoomClient {
      * song's videoId and "ended" hasn't been sent for it yet. If the socket is down, the
      * ended songId is remembered and "ended" is sent after reconnect when the server's
      * post-ack "play" is still for that same songId. Never sends "ended" twice per songId.
+     * {@code positionMs} is the playhead logged with the send ({@code -1} when unknown).
      */
     public synchronized void songEnded(String videoId) {
+        songEnded(videoId, -1L);
+    }
+
+    public synchronized void songEnded(String videoId, long positionMs) {
         if (!mRunning || mCurrentSongId == null) {
             return;
         }
@@ -247,8 +288,9 @@ public class JukeboxRoomClient {
         if (mEndedSentSongIds.contains(mCurrentSongId)) {
             return;
         }
-        if (!sendEndedLocked(mCurrentSongId, mCurrentVideoId)) {
+        if (!sendEndedLocked(mCurrentSongId, mCurrentVideoId, positionMs)) {
             mPendingEndSongId = mCurrentSongId;
+            mPendingEndPositionMs = positionMs;
         }
     }
 
@@ -286,9 +328,82 @@ public class JukeboxRoomClient {
         return mCurrentVideoId;
     }
 
+    /**
+     * Test-only. Invoked on this client while a position record is published,
+     * before that record is stored. Pass null when the test is done. Package
+     * private and per instance: there is no static test state.
+     */
+    void setDuringPositionPublishForTests(Runnable hook) {
+        mDuringPositionPublishForTests = hook;
+    }
+
     /** True while the current song id came from a "state" snapshot, not a "play" (lock-free). */
     public boolean isSongFromState() {
         return mSongFromState;
+    }
+
+    /**
+     * Estimated room playback position of {@code videoId} — the song the latest
+     * "state" snapshot names. A playing room is {@code serverNow - startedAt},
+     * and that server clock advances by {@link SystemClock#elapsedRealtime()}
+     * since the snapshot arrived, so a wall-clock step does not move the song.
+     * A paused room with {@code pausedAt} stays frozen at {@code pausedAt -
+     * startedAt}. A paused room with no {@code pausedAt} freezes at the
+     * snapshot's own {@code serverNow} and does not advance as time passes.
+     *
+     * <p>{@code -1} (unknown; callers keep their usual behavior) when there is
+     * no snapshot, the room is idle, the video id does not match, the snapshot
+     * omitted {@code now}, the estimate is negative, or it is at or past
+     * {@code durationMs} minus {@link #END_MARGIN_MS}. Lock-free: one volatile
+     * read, safe from the Android main thread.
+     */
+    public long roomPositionMs(String videoId) {
+        RoomPosition snap = mPosition;
+        if (snap.videoId == null || videoId == null || !snap.videoId.equals(videoId)) {
+            return -1L;
+        }
+        if (snap.startedAtMs <= 0L || snap.serverNowMs <= 0L) {
+            return -1L; // no startedAt, or the server sent no "now"
+        }
+        long elapsedMs = SystemClock.elapsedRealtime() - snap.receivedAtElapsedMs;
+        if (elapsedMs < 0L) {
+            elapsedMs = 0L;
+        }
+        // Paused with no pausedAt: freeze at the snapshot's own serverNow.
+        // Elapsed time must not move a paused room.
+        long endMs = !snap.paused ? snap.serverNowMs + elapsedMs
+                : (snap.pausedAtMs > 0L ? snap.pausedAtMs : snap.serverNowMs);
+        long posMs = endMs - snap.startedAtMs;
+        if (posMs < 0L) {
+            return -1L;
+        }
+        if (isAtEnd(posMs, snap.durationMs)) {
+            return -1L; // at or past the end: do not seek there
+        }
+        return posMs;
+    }
+
+    /**
+     * Duration of the latest position snapshot for {@code videoId}, or
+     * {@code -1} when this video has no snapshot or the snapshot omitted
+     * duration. Lock-free, same record as {@link #roomPositionMs}.
+     */
+    public long snapshotDurationMs(String videoId) {
+        RoomPosition snap = mPosition;
+        if (videoId == null || !videoId.equals(snap.videoId) || snap.durationMs <= 0L) {
+            return -1L;
+        }
+        return snap.durationMs;
+    }
+
+    /**
+     * True when the latest position snapshot names {@code videoId} and that
+     * song is paused. A later snapshot that is not paused answers false, so a
+     * view-resume can unpause. Lock-free, same record as {@link #roomPositionMs}.
+     */
+    public boolean isSnapshotPaused(String videoId) {
+        RoomPosition snap = mPosition;
+        return videoId != null && videoId.equals(snap.videoId) && snap.paused;
     }
 
     // Internal machinery. The *Locked helpers below expect the instance lock to be
@@ -445,6 +560,7 @@ public class JukeboxRoomClient {
             handlePlayLocked(message);
         } else if (JukeboxProtocol.TYPE_STATE.equals(type)) {
             logStateMessage(text, message);
+            captureRoomPositionLocked(message);
             if (message.isNowPlayingNull()) {
                 clearSongLocked();
             } else {
@@ -503,6 +619,41 @@ public class JukeboxRoomClient {
         }
     }
 
+    /**
+     * Records the room position of the song a "state" snapshot names (issue #6):
+     * nowPlaying startedAt/paused/pausedAt/durationMs plus the snapshot's own
+     * server clock. A snapshot without position data (or an idle room) clears
+     * the record — {@link #roomPositionMs(String)} then answers -1 and callers
+     * keep their usual behavior. The test hook runs before the new record is
+     * visible and is not used on this clear path.
+     */
+    private void captureRoomPositionLocked(JukeboxProtocol.Message message) {
+        if (message.isNowPlayingNull()
+                || !JukeboxProtocol.isValidVideoId(message.getNowPlayingVideoId())
+                || message.getNowPlayingStartedAtMs() == null) {
+            clearRoomPositionLocked();
+            return;
+        }
+        RoomPosition next = new RoomPosition(
+                message.getNowPlayingVideoId(),
+                message.isNowPlayingPaused(),
+                message.getNowPlayingStartedAtMs(),
+                message.getNowPlayingPausedAtMs() != null ? message.getNowPlayingPausedAtMs() : 0L,
+                message.getNowPlayingDurationMs() != null ? message.getNowPlayingDurationMs() : 0L,
+                message.getServerNowMs() != null ? message.getServerNowMs() : 0L,
+                SystemClock.elapsedRealtime());
+        Runnable duringPublish = mDuringPositionPublishForTests;
+        if (duringPublish != null) {
+            duringPublish.run();
+        }
+        mPosition = next;
+    }
+
+    /** Drops the position record in one store. No test hook. */
+    private void clearRoomPositionLocked() {
+        mPosition = RoomPosition.NONE;
+    }
+
     private void handlePlayLocked(JukeboxProtocol.Message message) {
         String songId = message.getSongId();
         if (songId == null || !JukeboxProtocol.isValidVideoId(message.getVideoId())) {
@@ -511,10 +662,12 @@ public class JukeboxRoomClient {
         if (mAwaitPlayAfterReconnect) {
             mAwaitPlayAfterReconnect = false;
             String endedSongId = mPendingEndSongId;
+            long endedPositionMs = mPendingEndPositionMs;
             mPendingEndSongId = null;
+            mPendingEndPositionMs = -1L;
             if (songId.equals(endedSongId)) {
                 // The server never saw our "ended" (socket was down): advance now.
-                sendEndedLocked(songId, message.getVideoId());
+                sendEndedLocked(songId, message.getVideoId(), endedPositionMs);
                 return;
             }
             // Otherwise the server already advanced on its own; drop the pending end.
@@ -578,6 +731,7 @@ public class JukeboxRoomClient {
         mCode = null;
         clearSongLocked();
         mPendingEndSongId = null;
+        mPendingEndPositionMs = -1L;
         mAwaitPlayAfterReconnect = false;
         if (mRunning) {
             notifyStatusLocked("Reconnecting…");
@@ -591,16 +745,27 @@ public class JukeboxRoomClient {
         mCurrentSongId = null;
         mCurrentVideoId = null;
         mSongFromState = false;
+        // The song (and with it any recorded room position) is gone: a later
+        // snapshot re-records it. Covers stop()/closed/song-clear paths.
+        clearRoomPositionLocked();
     }
 
     private boolean isCurrentSongLocked(String videoId) {
         return mRunning && mCurrentSongId != null && videoId != null && videoId.equals(mCurrentVideoId);
     }
 
-    /** @return false when the socket did not accept the message (caller may retry). */
-    private boolean sendEndedLocked(String songId, String videoId) {
+    /**
+     * @return false when the socket did not accept the message (caller may retry).
+     *         true when the send was accepted, already sent, or refused because
+     *         {@code videoId} is null or not a real video id — a refused id is
+     *         never retried and never put on the wire.
+     */
+    private boolean sendEndedLocked(String songId, String videoId, long positionMs) {
         if (mEndedSentSongIds.contains(songId)) {
             return true; // never send ended twice for one songId
+        }
+        if (!JukeboxProtocol.isValidVideoId(videoId)) {
+            return true; // never send "ended" with a null or malformed video id
         }
         if (!mTransport.send(JukeboxProtocol.ended(mToken, songId, videoId))) {
             return false;
@@ -611,6 +776,7 @@ public class JukeboxRoomClient {
             it.next();
             it.remove();
         }
+        JukeboxLog.i(LOG_TAG, "ended sent videoId=" + videoId + " positionMs=" + positionMs);
         return true;
     }
 
@@ -631,5 +797,34 @@ public class JukeboxRoomClient {
     private void notifyStatusLocked(String status) {
         mLastStatus = status;
         mListener.onStatus(status);
+    }
+
+    /**
+     * One "state" snapshot's position fields. Immutable; published by a single
+     * volatile write so readers cannot mix two snapshots.
+     */
+    private static final class RoomPosition {
+        static final RoomPosition NONE = new RoomPosition(null, false, 0L, 0L, 0L, 0L, 0L);
+
+        final String videoId;
+        final boolean paused;
+        final long startedAtMs;
+        final long pausedAtMs;
+        final long durationMs;
+        /** Epoch ms from the snapshot's {@code now}. 0 when the server omitted it. */
+        final long serverNowMs;
+        /** {@link SystemClock#elapsedRealtime()} when this snapshot was received. */
+        final long receivedAtElapsedMs;
+
+        RoomPosition(String videoId, boolean paused, long startedAtMs, long pausedAtMs,
+                     long durationMs, long serverNowMs, long receivedAtElapsedMs) {
+            this.videoId = videoId;
+            this.paused = paused;
+            this.startedAtMs = startedAtMs;
+            this.pausedAtMs = pausedAtMs;
+            this.durationMs = durationMs;
+            this.serverNowMs = serverNowMs;
+            this.receivedAtElapsedMs = receivedAtElapsedMs;
+        }
     }
 }

@@ -90,8 +90,29 @@ public final class JukeboxRoom {
                     // Open the video BEFORE notifying the listeners: onStateChanged
                     // runs the controller's resume check, which must already see this
                     // load in flight (onNewVideo) — or it would open the same video a
-                    // second time, cancelling this load.
-                    PlaybackPresenter.instance(mAppContext).openVideo(videoId);
+                    // second time, cancelling this load. Issue #6 (cold start): seek
+                    // to the room's current position computed from the state snapshot
+                    // (song startedAt + server time elapsed); -1 (unknown) keeps the
+                    // plain start-at-0 open. The marker is only dropped here when that
+                    // open did not start a player (app backgrounded between the check
+                    // above and the launch). A player that has not attached yet is
+                    // still a normal pending load.
+                    PlaybackPresenter presenter = PlaybackPresenter.instance(mAppContext);
+                    long posMs = getRoomPositionMs(videoId);
+                    if (posMs >= 0) {
+                        JukeboxLog.i(LOG_TAG, "play " + videoId + ": opening at the room position "
+                                + posMs + "ms (snapshot startedAt + server time elapsed)");
+                        presenter.openVideo(videoId, false, posMs, false);
+                    } else {
+                        presenter.openVideo(videoId);
+                    }
+                    if (!JukeboxForeground.isAppInForeground()) {
+                        JukeboxRoomController controller =
+                                presenter.getController(JukeboxRoomController.class);
+                        if (controller != null) {
+                            controller.clearLoadThatNeverStarted();
+                        }
+                    }
                 }
                 for (Listener listener : mListeners) {
                     listener.onStateChanged(title);
@@ -378,13 +399,58 @@ public final class JukeboxRoom {
         return client.isSongFromState();
     }
 
+    /**
+     * Estimated room playback position of {@code videoId} (the current room
+     * song), computed from the latest "state" snapshot (song startedAt/paused
+     * plus the server clock, advancing with elapsed time) — see
+     * {@link JukeboxRoomClient#roomPositionMs(String)}. {@code -1} when
+     * unknown: callers then keep their usual behavior.
+     */
+    public long getRoomPositionMs(String videoId) {
+        JukeboxRoomClient client = mClient;
+        if (client == null || !mActive || videoId == null) {
+            return -1L;
+        }
+        return client.roomPositionMs(videoId);
+    }
+
+    /**
+     * Duration of the latest position snapshot for {@code videoId}, or
+     * {@code -1} when unknown. See {@link JukeboxRoomClient#snapshotDurationMs}.
+     */
+    public long getSnapshotDurationMs(String videoId) {
+        JukeboxRoomClient client = mClient;
+        if (client == null || !mActive || videoId == null) {
+            return -1L;
+        }
+        return client.snapshotDurationMs(videoId);
+    }
+
+    /**
+     * True when the latest position snapshot names {@code videoId} and the
+     * host has that song paused. False when unknown, so callers keep forcing
+     * playback. See {@link JukeboxRoomClient#isSnapshotPaused(String)}.
+     */
+    public boolean isSnapshotPaused(String videoId) {
+        JukeboxRoomClient client = mClient;
+        if (client == null || !mActive || videoId == null) {
+            return false;
+        }
+        return client.isSnapshotPaused(videoId);
+    }
+
     /** See {@link JukeboxRoomClient#songEnded(String)}. */
     public void songEnded(String videoId) {
+        songEnded(videoId, -1L);
+    }
+
+    /** See {@link JukeboxRoomClient#songEnded(String, long)}. {@code positionMs} is logged with the send. */
+    public void songEnded(String videoId, long positionMs) {
         JukeboxRoomClient client = mClient;
         if (client == null || !mActive) {
             return;
         }
-        client.songEnded(videoId);
+        client.songEnded(videoId, positionMs);
     }
 
     /** See {@link JukeboxRoomClient#reportPlaying(String, Integer, Integer, String)}. */
