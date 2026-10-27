@@ -362,24 +362,16 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         }
         boolean roomPlaying = isRoomPlaying();
         boolean becamePlaying = roomPlaying && !mRoomSongActive;
-        // setFocusable(false) clears focus, so read this before that call.
-        boolean qrHadFocus = mQrView.hasFocus();
         mRoomSongActive = roomPlaying;
         mQrView.setFocusable(roomPlaying);
         mQrView.setClickable(roomPlaying);
+        if (!roomPlaying) {
+            // setFocusable(false) clears focus and the framework moves it to Browse.
+            return;
+        }
 
-        View target = findViewById(defaultFocusId(roomPlaying));
-        if (target == null) {
-            return;
-        }
-        if (roomPlaying) {
-            if (becamePlaying && !target.hasFocus()) {
-                target.requestFocus();
-            }
-            return;
-        }
-        if (qrHadFocus) {
-            // Losing focusability does not restore the layout default.
+        View target = findViewById(defaultFocusId(true));
+        if (target != null && becamePlaying && !target.hasFocus()) {
             target.requestFocus();
         }
     }
