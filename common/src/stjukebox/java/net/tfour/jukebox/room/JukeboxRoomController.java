@@ -41,10 +41,23 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
      * reopen reports onPlayEnd mid-song; that must not advance the room.
      */
     private static final long END_REACHED_MARGIN_MS = 2_000L;
+    /**
+     * First {@link #onPlay()} after a load seeks when the playhead is farther
+     * than this from the room position. Nina 2488 cold start lands 4.3-4.9s
+     * behind because the open seek is computed at openVideo time and the first
+     * frame is 11-12s later.
+     */
+    private static final long COLD_START_DRIFT_MS = 1_000L;
 
     private Handler mHandler;
     private boolean mHeartbeatRunning;
     private String mLoadedVideoId;
+    /**
+     * True after the first {@link #onPlay()} catch-up check for the current
+     * {@link #mLoadedVideoId}. Cleared wherever that id is set or cleared, so
+     * each load gets one check. A later onPlay (pause/resume) does not seek.
+     */
+    private boolean mColdStartDriftCatchUpDone;
     private boolean mListening;
     private boolean mSuppressReports;
     /** Room videoId of the openVideo call currently on the stack. */
@@ -185,7 +198,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
                 player.setPlayWhenReady(false);
             }
             stopHeartbeat();
-            mLoadedVideoId = null;
+            setLoadedVideoId(null);
             return;
         } else if (beginReopen(roomVideoId)) {
             // Mismatch, and this room video is not the one we're already opening.
@@ -205,13 +218,13 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
                 player.setPlayWhenReady(false);
             }
             stopHeartbeat();
-            mLoadedVideoId = null;
+            setLoadedVideoId(null);
             return;
         }
         if (loadedId == null) {
             return;
         }
-        mLoadedVideoId = loadedId;
+        setLoadedVideoId(loadedId);
         // A paused snapshot stays paused: do not start playback on load.
         // ensureRoomSongPlaying is what unpauses, and only once a later
         // snapshot says the song is playing.
@@ -237,10 +250,47 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         if (!JukeboxRoom.isRoomActive()) {
             return;
         }
+        catchUpColdStartDriftOnce();
         if (mLoadedVideoId != null) {
             startHeartbeat();
         }
         reportState("playing");
+    }
+
+    /**
+     * First {@link #onPlay()} after this load of the room song. Recompute the
+     * room position (it has moved since openVideo) and seek once when the
+     * playhead is more than {@link #COLD_START_DRIFT_MS} off. A paused room and
+     * an unknown position ({@code -1}) do not seek. The one-shot flag blocks a
+     * later onPlay from seeking again.
+     */
+    private void catchUpColdStartDriftOnce() {
+        if (mColdStartDriftCatchUpDone || mLoadedVideoId == null) {
+            return;
+        }
+        Context ctx = getContext();
+        PlaybackView player = getPlayer();
+        if (ctx == null || player == null) {
+            return;
+        }
+        JukeboxRoom room = JukeboxRoom.instance(ctx);
+        if (!mLoadedVideoId.equals(room.getCurrentVideoId())) {
+            return;
+        }
+        mColdStartDriftCatchUpDone = true;
+        if (room.isSnapshotPaused(mLoadedVideoId)) {
+            return;
+        }
+        long roomPos = room.getRoomPositionMs(mLoadedVideoId);
+        if (roomPos < 0) {
+            return;
+        }
+        long playerPos = player.getPositionMs();
+        if (Math.abs(roomPos - playerPos) > COLD_START_DRIFT_MS) {
+            JukeboxLog.i(LOG_TAG, "cold-start drift " + (roomPos - playerPos) + "ms on " + mLoadedVideoId
+                    + ": seeking once to room position " + roomPos + "ms");
+            player.setPositionMs(roomPos);
+        }
     }
 
     @Override
@@ -281,7 +331,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         if (ctx != null) {
             JukeboxRoom.instance(ctx).songEnded(videoId, positionMs);
         }
-        mLoadedVideoId = null;
+        setLoadedVideoId(null);
         mLoadingVideoId = null;
         mLoadingSinceMs = 0L;
     }
@@ -289,7 +339,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     @Override
     public void onEngineReleased() {
         stopHeartbeat();
-        mLoadedVideoId = null;
+        setLoadedVideoId(null);
         mLoadingVideoId = null;
         mLoadingSinceMs = 0L;
         resetReopen();
@@ -397,6 +447,15 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     }
 
     /**
+     * Sets or clears the loaded room video and arms a fresh one-shot catch-up.
+     * Every assignment of {@link #mLoadedVideoId} goes through here.
+     */
+    private void setLoadedVideoId(String videoId) {
+        mLoadedVideoId = videoId;
+        mColdStartDriftCatchUpDone = false;
+    }
+
+    /**
      * Pauses whatever is loaded and (re)opens the exact room videoId (bounded by
      * {@link #beginReopen}). {@code posMs} (>= 0) becomes the opened video's
      * pending position — the room position when it is known, otherwise the last
@@ -407,7 +466,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
                 + " (attempt " + mReopenAttempts + ", posMs=" + posMs + ")");
         mLastResumeLog = null; // the next decision may repeat a line: log it fresh
         stopHeartbeat();
-        mLoadedVideoId = null;
+        setLoadedVideoId(null);
         mSuppressReports = true;
         try {
             PlaybackView player = getPlayer();
@@ -529,7 +588,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             logResume(via, "resume: loaded marker " + mLoadedVideoId + " is stale ("
                     + (hasLiveEngine() ? "room song changed" : "engine released/no live player")
                     + "): resuming the room song");
-            mLoadedVideoId = null;
+            setLoadedVideoId(null);
             mLoadingVideoId = null;
             mLoadingSinceMs = 0L;
             resetReopen();
