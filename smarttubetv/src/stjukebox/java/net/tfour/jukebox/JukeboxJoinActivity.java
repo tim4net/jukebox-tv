@@ -247,7 +247,6 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         startResumeRetry("onResume");
         // State first (arm the QR, move focus only when playback starts or stops).
         // Then restore the default, unless the user is already on Browse.
-        applyJoinFocus();
         if (mQrView == null) {
             return;
         }
