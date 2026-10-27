@@ -173,7 +173,6 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         // onResume() clears it too — this covers the onNewIntent-only path.
         ViewManager.instance(this).removeTop(PlaybackActivity.class);
         room.start();
-        bind(room.getCode(), room.getJoinUrl(), room.getStatus(), room.getNowPlaying());
         startResumeRetry(via);
     }
 
@@ -246,8 +245,8 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         // single mistimed check (the 2465 failure) can't leave the room silent.
         startResumeRetry("onResume");
         // Restore the default (QR while playing, Browse while idle) unless
-        // Browse already has focus. onStart's listener re-register already
-        // armed the QR; this does not.
+        // Browse already has focus. The re-entry rebind (room.start() posted
+        // rebind via onRoomUpdated) armed the QR; this does not.
         if (mQrView == null) {
             return;
         }
@@ -345,8 +344,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
 
     /** Active room with a current video. Shared by resume focus and {@link #applyJoinFocus()}. */
     private boolean isRoomPlaying() {
-        JukeboxRoom room = JukeboxRoom.instance(this);
-        return room.isActive() && room.getCurrentVideoId() != null;
+        return JukeboxRoom.instance(this).getCurrentVideoId() != null;
     }
 
     /**
@@ -365,13 +363,9 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         mRoomSongActive = roomPlaying;
         mQrView.setFocusable(roomPlaying);
         mQrView.setClickable(roomPlaying);
-        if (!roomPlaying) {
-            // setFocusable(false) clears focus and the framework moves it to Browse.
-            return;
-        }
 
         View target = findViewById(defaultFocusId(true));
-        if (target != null && becamePlaying && !target.hasFocus()) {
+        if (target != null && becamePlaying) {
             target.requestFocus();
         }
     }

@@ -233,9 +233,8 @@ public class JukeboxJoinFocusTest {
     public void backgroundedIdleWithoutCallbackResumeDisarmsQrAndFocusesBrowse() throws Exception {
         // Room playing, then the app is backgrounded. onStop drops the room
         // listener, so the room can go idle with no onRoomUpdated and no bind.
-        // Resume must disarm the QR and focus Browse. Fails if onResume stops
-        // calling applyJoinFocus() — the requestFocus step alone leaves the QR
-        // focusable and clickable.
+        // Guards the restart re-entry path (reenterRoom -> room.start() posted
+        // rebind): resume must disarm the QR and focus Browse.
         HoldingClient client = installHoldingRoom();
         ActivityController<JukeboxJoinActivity> ac =
                 Robolectric.buildActivity(JukeboxJoinActivity.class).setup();
