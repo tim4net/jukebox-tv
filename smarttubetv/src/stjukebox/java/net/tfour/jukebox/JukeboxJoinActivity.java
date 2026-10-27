@@ -121,33 +121,48 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
 
         // The room is started in onStart(): onCreate is always followed by onStart,
         // and starting here as well would race the two back-to-back start() calls.
-        // Focus is applied in onResume / onWindowFocusChanged, after layout, so the
-        // room code beats BROWSE YOUTUBE.
+        // Focus is applied in onResume / onWindowFocusChanged, after layout:
+        // BROWSE YOUTUBE while idle, the QR join action while a room song is playing.
     }
 
     /**
-     * Puts D-pad focus on the room code. Called from resume and again when the
-     * window actually gains focus, because a layout pass in between assigns
-     * focus to the first sized focusable (the browse button) otherwise.
-     * The posted request runs after that layout. No-op before the layout exists.
+     * After layout, default focus follows the room: the QR join action while a
+     * room song is playing, BROWSE YOUTUBE while idle. Never the room code.
+     * Called from resume and again when the window actually gains focus, because
+     * a layout pass in between assigns focus to the first sized focusable
+     * otherwise. The posted request runs after that layout and reads the room
+     * state then, so a song that arrives in between is not overwritten.
+     * A later resume while the room stays playing does not pull focus off
+     * Browse once the user has moved there. No-op before the join UI exists
+     * (a forwarded launch has no views).
      */
-    private void focusRoomCode() {
-        if (mCodeView == null) {
+    private void applyDefaultFocusAfterLayout() {
+        if (mQrView == null || mBrowseView == null) {
             return;
         }
-        mCodeView.requestFocus();
-        mCodeView.post(() -> {
-            if (mCodeView != null) {
-                mCodeView.requestFocus();
+        requestDefaultFocus();
+        mBrowseView.post(this::requestDefaultFocus);
+    }
+
+    private void requestDefaultFocus() {
+        if (mQrView == null || mBrowseView == null) {
+            return;
+        }
+        if (mRoomSongActive) {
+            if (mBrowseView.hasFocus()) {
+                return;
             }
-        });
+            mQrView.requestFocus();
+            return;
+        }
+        mBrowseView.requestFocus();
     }
 
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
-            focusRoomCode();
+            applyDefaultFocusAfterLayout();
         }
     }
 
@@ -263,10 +278,8 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         // single mistimed check (the 2465 failure) can't leave the room silent.
         startResumeRetry("onResume");
         updateDefaultFocus();
-        // Last focus request of onResume, so BROWSE YOUTUBE cannot keep the default.
-        if (!mRoomSongActive) {
-            focusRoomCode();
-        }
+        // Last focus request of onResume, after layout: idle -> Browse, playing -> QR join.
+        applyDefaultFocusAfterLayout();
     }
 
     @Override
