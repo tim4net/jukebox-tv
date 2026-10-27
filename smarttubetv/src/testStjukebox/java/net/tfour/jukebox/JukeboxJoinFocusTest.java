@@ -24,9 +24,9 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 /**
- * Join screen focus (Nina 2486): uiautomator found BROWSE YOUTUBE
- * (jukebox_browse) focused. The room code is the primary view and must own
- * focus on create and again on re-entry/resume.
+ * Join screen default focus (Tim): an idle room focuses BROWSE YOUTUBE
+ * (R.id.jukebox_browse) on create and again on resume. The room code
+ * (R.id.jukebox_code) never gets default focus.
  */
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 28, qualifiers = "w960dp-h540dp-land-television-notouch")
@@ -55,7 +55,7 @@ public class JukeboxJoinFocusTest {
     }
 
     @Test
-    public void roomCodeIsFocusedOnCreateNotBrowse() {
+    public void idleRoomFocusesBrowseOnCreateNotRoomCode() {
         ActivityController<JukeboxJoinActivity> ac =
                 Robolectric.buildActivity(JukeboxJoinActivity.class).setup();
         JukeboxJoinActivity a = ac.get();
@@ -64,37 +64,46 @@ public class JukeboxJoinFocusTest {
         View code = a.findViewById(R.id.jukebox_code);
         View browse = a.findViewById(R.id.jukebox_browse);
         View focused = a.getWindow().getDecorView().findFocus();
-        assertSame("create must focus the room code, not " + name(focused)
+        assertSame("idle create must focus BROWSE YOUTUBE, not " + name(focused)
                         + " (codeFocused=" + code.isFocused()
                         + " browseFocused=" + browse.isFocused() + ")",
-                code, focused);
-        assertFalse("BROWSE YOUTUBE must not own the default focus", browse.isFocused());
+                browse, focused);
+        assertFalse("the room code must not own the default focus", code.isFocused());
         ac.pause().stop().destroy();
     }
 
     @Test
-    public void roomCodeWinsAgainOnResumeEvenIfBrowseTookFocus() {
+    public void idleRoomResumeRestoresBrowseEvenIfRoomCodeTookFocus() {
         ActivityController<JukeboxJoinActivity> ac =
                 Robolectric.buildActivity(JukeboxJoinActivity.class).setup();
         JukeboxJoinActivity a = ac.get();
+        Shadows.shadowOf(a.getMainLooper()).idle();
+
         View code = a.findViewById(R.id.jukebox_code);
         View browse = a.findViewById(R.id.jukebox_browse);
 
-        // The user (or the old layout) left Browse focused. Leaving and
-        // coming back — pause/resume, the re-entry path — must restore the code.
-        assertTrue("browse must be able to take focus before the resume check",
-                browse.requestFocus());
-        assertTrue(browse.isFocused());
+        // The room code is not the default focus target. Make it able to take
+        // focus so this test can leave it focused; pause/resume on an idle
+        // room must still hand default focus back to BROWSE YOUTUBE.
+        if (!code.isFocusableInTouchMode()) {
+            code.setFocusableInTouchMode(true);
+        }
+        if (!code.isFocusable()) {
+            code.setFocusable(true);
+        }
+        assertTrue("room code must be able to take focus before the resume check",
+                code.requestFocus());
+        assertTrue(code.isFocused());
         ac.pause();
         ac.resume();
         Shadows.shadowOf(a.getMainLooper()).idle();
 
         View focused = a.getWindow().getDecorView().findFocus();
-        assertSame("resume must focus the room code, not " + name(focused)
+        assertSame("idle resume must focus BROWSE YOUTUBE, not " + name(focused)
                         + " (codeFocused=" + code.isFocused()
                         + " browseFocused=" + browse.isFocused() + ")",
-                code, focused);
-        assertFalse(browse.isFocused());
+                browse, focused);
+        assertFalse("the room code must not keep focus across idle resume", code.isFocused());
         ac.pause().stop().destroy();
     }
 
