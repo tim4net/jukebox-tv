@@ -80,9 +80,19 @@ public class JukeboxRoomClient {
     /**
      * A position this close to {@code durationMs} (or past it) is unknown.
      * Callers must not seek to the end. Same 2s as the web listen-along
-     * drift tolerance.
+     * drift tolerance. The only end margin: {@link #isAtEnd} is what the
+     * room estimate, play-end, and the pending-seek fallback all use.
      */
     private static final long END_MARGIN_MS = 2_000L;
+
+    /**
+     * True when {@code posMs} is inside the last {@link #END_MARGIN_MS} of a
+     * known duration, or past it. A duration {@code <= 0} is unknown and is
+     * not the end.
+     */
+    static boolean isAtEnd(long posMs, long durationMs) {
+        return durationMs > 0L && posMs >= durationMs - END_MARGIN_MS;
+    }
 
     private final String mOrigin;
     private final Transport mTransport;
@@ -367,10 +377,23 @@ public class JukeboxRoomClient {
         if (posMs < 0L) {
             return -1L;
         }
-        if (snap.durationMs > 0L && posMs >= snap.durationMs - END_MARGIN_MS) {
+        if (isAtEnd(posMs, snap.durationMs)) {
             return -1L; // at or past the end: do not seek there
         }
         return posMs;
+    }
+
+    /**
+     * Duration of the latest position snapshot for {@code videoId}, or
+     * {@code -1} when this video has no snapshot or the snapshot omitted
+     * duration. Lock-free, same record as {@link #roomPositionMs}.
+     */
+    public long snapshotDurationMs(String videoId) {
+        RoomPosition snap = mPosition;
+        if (videoId == null || !videoId.equals(snap.videoId) || snap.durationMs <= 0L) {
+            return -1L;
+        }
+        return snap.durationMs;
     }
 
     /**

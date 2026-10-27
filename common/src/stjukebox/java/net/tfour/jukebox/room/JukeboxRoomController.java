@@ -36,12 +36,6 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
      */
     private static final long LOAD_IN_FLIGHT_TIMEOUT_MS = 15_000;
     /**
-     * "ended" is a real end of the room song only when the playhead is inside
-     * this window of a known duration (or past it). A period-transition during
-     * reopen reports onPlayEnd mid-song; that must not advance the room.
-     */
-    private static final long END_REACHED_MARGIN_MS = 2_000L;
-    /**
      * First {@link #onPlay()} after a load seeks when the playhead is farther
      * than this from the room position. Nina 2488 cold start lands 4.3-4.9s
      * behind because the open seek is computed at openVideo time and the first
@@ -106,6 +100,9 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
             PlaybackView player = getPlayer();
             Context ctx = getContext();
             if (!JukeboxRoom.isRoomActive() || mLoadedVideoId == null || player == null || ctx == null) {
+                if (player == null) {
+                    JukeboxLog.i(LOG_TAG, "heartbeat stopped: player==null");
+                }
                 stopHeartbeat();
                 return;
             }
@@ -270,7 +267,11 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         }
         Context ctx = getContext();
         PlaybackView player = getPlayer();
-        if (ctx == null || player == null) {
+        if (player == null) {
+            JukeboxLog.i(LOG_TAG, "cold-start drift skipped: player==null");
+            return;
+        }
+        if (ctx == null) {
             return;
         }
         JukeboxRoom room = JukeboxRoom.instance(ctx);
@@ -301,8 +302,10 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
 
     @Override
     public void onPlayEnd() {
+        // The engine has stopped, including a rejected period-transition end.
+        // Progress must not keep ticking on any of these paths.
+        stopHeartbeat();
         if (!JukeboxRoom.isRoomActive()) {
-            stopHeartbeat();
             dismissPopupOverlay();
             return;
         }
@@ -310,30 +313,53 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         // while the playhead is still mid-song (issue #25). Sending "ended" then
         // makes the server drop the song. Only a real end of the current room
         // song's video id may be reported, and a rejected end must not clear the
-        // in-flight load or the ended-guard.
+        // in-flight load or the ended-guard. A player duration of 0 (or unset)
+        // falls back to the room snapshot's duration; when both are unknown the
+        // end is accepted.
         PlaybackView player = getPlayer();
         Video video = player != null && player.getVideo() != null ? player.getVideo() : getVideo();
         String videoId = video != null ? video.videoId : null;
+        if (player == null) {
+            JukeboxLog.i(LOG_TAG, "play end: player==null");
+        }
         long positionMs = player != null ? player.getPositionMs() : -1L;
-        long durationMs = player != null ? player.getDurationMs() : -1L;
+        long playerDurMs = player != null ? player.getDurationMs() : -1L;
         Context ctx = getContext();
-        String roomVideoId = ctx != null ? JukeboxRoom.instance(ctx).getCurrentVideoId() : null;
-        boolean reachedEnd = durationMs > 0L && positionMs >= durationMs - END_REACHED_MARGIN_MS;
-        if (!JukeboxProtocol.isValidVideoId(videoId) || !videoId.equals(roomVideoId) || !reachedEnd) {
+        JukeboxRoom room = ctx != null ? JukeboxRoom.instance(ctx) : null;
+        String roomVideoId = room != null ? room.getCurrentVideoId() : null;
+        boolean isRoomVideo = JukeboxProtocol.isValidVideoId(videoId) && videoId.equals(roomVideoId);
+        long snapDurMs = room != null ? room.getSnapshotDurationMs(videoId) : -1L;
+        if (!shouldReportEnded(isRoomVideo, positionMs, playerDurMs, snapDurMs)) {
             JukeboxLog.i(LOG_TAG, "play end ignored: videoId=" + videoId
-                    + " positionMs=" + positionMs + " durationMs=" + durationMs);
+                    + " positionMs=" + positionMs + " durationMs=" + playerDurMs);
             return;
         }
-        stopHeartbeat();
         // Playback of the room song is over: drop any pop-up bubbles.
         dismissPopupOverlay();
         mEndedVideoId = videoId;
-        if (ctx != null) {
-            JukeboxRoom.instance(ctx).songEnded(videoId, positionMs);
+        if (room != null) {
+            room.songEnded(videoId, positionMs);
         }
         setLoadedVideoId(null);
         mLoadingVideoId = null;
         mLoadingSinceMs = 0L;
+    }
+
+    /**
+     * Whether {@link #onPlayEnd()} should send "ended". A positive player
+     * duration wins. Zero or negative falls back to the room snapshot's
+     * duration. When both are unknown, a room video accepts the end. A
+     * video that is not the room's current song never reports.
+     */
+    static boolean shouldReportEnded(boolean isRoomVideo, long posMs, long playerDurMs, long snapDurMs) {
+        if (!isRoomVideo) {
+            return false;
+        }
+        long durMs = playerDurMs > 0L ? playerDurMs : snapDurMs;
+        if (durMs <= 0L) {
+            return true;
+        }
+        return JukeboxRoomClient.isAtEnd(posMs, durMs);
     }
 
     @Override
@@ -717,21 +743,35 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
      * (issue #24): serverNow − startedAt, frozen at pausedAt while paused,
      * plus elapsed time since the snapshot. The player's own last tick is only
      * the fallback when that estimate is unknown (no snapshot, idle, or no
-     * startedAt) — a cold start with no local memory still seeks via the
-     * play-path open, which uses the same estimate.
+     * startedAt) — and that tick is dropped when it is inside the end margin
+     * of a known duration (player duration, else the snapshot's), the same
+     * {@link JukeboxRoomClient#isAtEnd} rule as the room estimate. A cold
+     * start with no local memory still seeks via the play-path open, which
+     * uses the same estimate.
      */
     private long pendingPosMs(String roomVideoId) {
         if (roomVideoId == null) {
             return -1L;
         }
         Context ctx = getContext();
-        if (ctx != null && JukeboxRoom.isRoomActive()) {
-            long roomPos = JukeboxRoom.instance(ctx).getRoomPositionMs(roomVideoId);
+        JukeboxRoom room = ctx != null && JukeboxRoom.isRoomActive() ? JukeboxRoom.instance(ctx) : null;
+        if (room != null) {
+            long roomPos = room.getRoomPositionMs(roomVideoId);
             if (roomPos >= 0) {
                 return roomPos;
             }
         }
         if (roomVideoId.equals(mLastPosVideoId) && mLastPosMs >= 0) {
+            long durMs = -1L;
+            PlaybackView player = getPlayer();
+            if (player != null && player.getDurationMs() > 0L) {
+                durMs = player.getDurationMs();
+            } else if (room != null) {
+                durMs = room.getSnapshotDurationMs(roomVideoId);
+            }
+            if (JukeboxRoomClient.isAtEnd(mLastPosMs, durMs)) {
+                return -1L;
+            }
             return mLastPosMs;
         }
         return -1L;
@@ -790,7 +830,11 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         }
         PlaybackView player = getPlayer();
         Context ctx = getContext();
-        if (player == null || ctx == null) {
+        if (player == null) {
+            JukeboxLog.i(LOG_TAG, "room song play skipped: player==null");
+            return;
+        }
+        if (ctx == null) {
             return;
         }
         JukeboxRoom room = JukeboxRoom.instance(ctx);

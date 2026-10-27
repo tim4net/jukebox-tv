@@ -415,6 +415,18 @@ public final class JukeboxRoom {
     }
 
     /**
+     * Duration of the latest position snapshot for {@code videoId}, or
+     * {@code -1} when unknown. See {@link JukeboxRoomClient#snapshotDurationMs}.
+     */
+    public long getSnapshotDurationMs(String videoId) {
+        JukeboxRoomClient client = mClient;
+        if (client == null || !mActive || videoId == null) {
+            return -1L;
+        }
+        return client.snapshotDurationMs(videoId);
+    }
+
+    /**
      * True when the latest position snapshot names {@code videoId} and the
      * host has that song paused. False when unknown, so callers keep forcing
      * playback. See {@link JukeboxRoomClient#isSnapshotPaused(String)}.
