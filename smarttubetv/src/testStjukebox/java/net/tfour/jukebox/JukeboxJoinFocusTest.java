@@ -18,15 +18,20 @@ import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
  * Join screen default focus (Tim): an idle room focuses BROWSE YOUTUBE
  * (R.id.jukebox_browse) on create and again on resume. The room code
- * (R.id.jukebox_code) never gets default focus.
+ * (R.id.jukebox_code) is not focusable and never gets default focus.
+ * {@link JukeboxJoinActivity#defaultFocusId(boolean)} is Browse when idle
+ * and the QR join action when a room song is playing.
  */
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 28, qualifiers = "w960dp-h540dp-land-television-notouch")
@@ -63,6 +68,10 @@ public class JukeboxJoinFocusTest {
 
         View code = a.findViewById(R.id.jukebox_code);
         View browse = a.findViewById(R.id.jukebox_browse);
+        assertFalse("the room code is not a focus target", code.isFocusable());
+        assertFalse("the room code is not focusable in touch mode", code.isFocusableInTouchMode());
+        assertFalse("the room code is not the layout default", code.isFocusedByDefault());
+        assertTrue("Browse is the layout's default focus", browse.isFocusedByDefault());
         View focused = a.getWindow().getDecorView().findFocus();
         assertSame("idle create must focus BROWSE YOUTUBE, not " + name(focused)
                         + " (codeFocused=" + code.isFocused()
@@ -73,7 +82,7 @@ public class JukeboxJoinFocusTest {
     }
 
     @Test
-    public void idleRoomResumeRestoresBrowseEvenIfRoomCodeTookFocus() {
+    public void idleRoomResumeLeavesBrowseFocusedAndRoomCodeCannotTakeFocus() {
         ActivityController<JukeboxJoinActivity> ac =
                 Robolectric.buildActivity(JukeboxJoinActivity.class).setup();
         JukeboxJoinActivity a = ac.get();
@@ -82,18 +91,9 @@ public class JukeboxJoinFocusTest {
         View code = a.findViewById(R.id.jukebox_code);
         View browse = a.findViewById(R.id.jukebox_browse);
 
-        // The room code is not the default focus target. Make it able to take
-        // focus so this test can leave it focused; pause/resume on an idle
-        // room must still hand default focus back to BROWSE YOUTUBE.
-        if (!code.isFocusableInTouchMode()) {
-            code.setFocusableInTouchMode(true);
-        }
-        if (!code.isFocusable()) {
-            code.setFocusable(true);
-        }
-        assertTrue("room code must be able to take focus before the resume check",
-                code.requestFocus());
-        assertTrue(code.isFocused());
+        assertFalse("the room code must not be focusable", code.isFocusable());
+        assertFalse("the room code must not accept a focus request", code.requestFocus());
+        assertFalse(code.isFocused());
         ac.pause();
         ac.resume();
         Shadows.shadowOf(a.getMainLooper()).idle();
@@ -103,8 +103,26 @@ public class JukeboxJoinFocusTest {
                         + " (codeFocused=" + code.isFocused()
                         + " browseFocused=" + browse.isFocused() + ")",
                 browse, focused);
-        assertFalse("the room code must not keep focus across idle resume", code.isFocused());
+        assertFalse("the room code must not take focus across idle resume", code.isFocused());
         ac.pause().stop().destroy();
+    }
+
+    @Test
+    public void defaultFocusIdIsBrowseWhenIdleAndQrWhenPlaying() throws Exception {
+        Method decide = JukeboxJoinActivity.class.getDeclaredMethod(
+                "defaultFocusId", boolean.class);
+        decide.setAccessible(true);
+        assertEquals(Integer.valueOf(R.id.jukebox_browse), decide.invoke(null, false));
+        assertEquals(Integer.valueOf(R.id.jukebox_qr), decide.invoke(null, true));
+
+        for (String replaced : new String[] {"updateDefaultFocus", "requestDefaultFocus"}) {
+            try {
+                JukeboxJoinActivity.class.getDeclaredMethod(replaced);
+                fail(replaced + " must be replaced by defaultFocusId");
+            } catch (NoSuchMethodException expected) {
+                // one pure function decides the focus target
+            }
+        }
     }
 
     private static String name(View view) {

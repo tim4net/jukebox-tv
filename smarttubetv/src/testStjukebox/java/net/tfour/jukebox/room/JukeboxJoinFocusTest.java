@@ -250,6 +250,38 @@ public class JukeboxJoinFocusTest {
                 browse.hasFocus());
     }
 
+    @Test
+    public void playingRoomFocusesTheQrOnResume() {
+        // The room is already playing when the join screen is shown, and still
+        // playing when the screen is left and resumed. Default focus is the QR
+        // join action both times.
+        JukeboxForeground.setTestOverride(false);
+        t.msg(state("s1", V1, TITLE));
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        launchJoin();
+        layoutLikeTheTv();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        View qr = ac.get().findViewById(R.id.jukebox_qr);
+        View code = ac.get().findViewById(R.id.jukebox_code);
+        Button browse = ac.get().findViewById(R.id.jukebox_browse);
+        assertTrue("the QR join action is focusable while the room plays", qr.isFocusable());
+        assertTrue("a playing room focuses the QR when the join screen opens", qr.hasFocus());
+        assertFalse(browse.hasFocus());
+        assertFalse("the room code must not take default focus", code.hasFocus());
+
+        ac.pause().stop();
+        ac.restart().resume();
+        layoutLikeTheTv();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        assertTrue("a playing room focuses the QR on resume", qr.hasFocus());
+        assertFalse("resume must not leave focus on Browse while the room plays",
+                browse.hasFocus());
+        assertFalse("resume must not leave focus on the room code", code.hasFocus());
+    }
+
     private void launchJoin() {
         ac = Robolectric.buildActivity(JukeboxJoinActivity.class).setup();
     }
