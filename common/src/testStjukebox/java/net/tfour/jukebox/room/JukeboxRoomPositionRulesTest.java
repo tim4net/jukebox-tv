@@ -96,7 +96,6 @@ public class JukeboxRoomPositionRulesTest {
         store = new JukeboxRoomClientTest.MapStore();
         rec = new JukeboxRoomClientTest.Rec();
         c = new JukeboxRoomClient(JukeboxRoomClientTest.ORIGIN, t, http, sch, store, rec, "");
-        c.setDuringPositionPublishForTests(null);
         c.start();
         t.open();
     }
@@ -107,7 +106,6 @@ public class JukeboxRoomPositionRulesTest {
             ShadowSystemClock.setNanoTime(mSavedNanoTime);
         }
         if (c != null) {
-            c.setDuringPositionPublishForTests(null);
             c.stop();
         }
     }

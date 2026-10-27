@@ -361,10 +361,8 @@ public class JukeboxRoomClient {
         }
         // Paused with no pausedAt: freeze at the snapshot's own serverNow.
         // Elapsed time must not move a paused room.
-        long serverNowMs = snap.paused && snap.pausedAtMs <= 0L
-                ? snap.serverNowMs
-                : snap.serverNowMs + elapsedMs;
-        long endMs = snap.paused && snap.pausedAtMs > 0L ? snap.pausedAtMs : serverNowMs;
+        long endMs = !snap.paused ? snap.serverNowMs + elapsedMs
+                : (snap.pausedAtMs > 0L ? snap.pausedAtMs : snap.serverNowMs);
         long posMs = endMs - snap.startedAtMs;
         if (posMs < 0L) {
             return -1L;
