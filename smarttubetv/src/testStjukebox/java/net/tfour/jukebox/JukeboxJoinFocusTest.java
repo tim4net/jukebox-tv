@@ -40,7 +40,9 @@ import static org.junit.Assert.assertTrue;
  *
  * Resume while a song stays playing restores that QR default unless Browse
  * already has focus. A playing room that goes idle, then resumes, focuses
- * Browse again.
+ * Browse again. A room that goes idle while the screen is stopped, with no
+ * state callback, is disarmed on resume: the QR is not focusable or clickable
+ * and Browse has focus.
  */
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 28, qualifiers = "w960dp-h540dp-land-television-notouch")
@@ -224,6 +226,41 @@ public class JukeboxJoinFocusTest {
         assertSame("resume must focus the QR when Browse does not have it, not " + name(focused),
                 qr, focused);
         assertFalse(browse.hasFocus());
+        ac.pause().stop().destroy();
+    }
+
+    @Test
+    public void backgroundedIdleWithoutCallbackResumeDisarmsQrAndFocusesBrowse() throws Exception {
+        // Room playing, then the app is backgrounded. onStop drops the room
+        // listener, so the room can go idle with no onRoomUpdated and no bind.
+        // Resume must disarm the QR and focus Browse. Fails if onResume stops
+        // calling applyJoinFocus() — the requestFocus step alone leaves the QR
+        // focusable and clickable.
+        HoldingClient client = installHoldingRoom();
+        ActivityController<JukeboxJoinActivity> ac =
+                Robolectric.buildActivity(JukeboxJoinActivity.class).setup();
+        JukeboxJoinActivity a = ac.get();
+        Shadows.shadowOf(a.getMainLooper()).idle();
+        layoutLikeTheTv(a);
+
+        View browse = a.findViewById(R.id.jukebox_browse);
+        View qr = a.findViewById(R.id.jukebox_qr);
+        client.videoId = VIDEO;
+        a.bind(null, null, null, "Song");
+        assertTrue("a playing room arms and focuses the QR",
+                qr.isFocusable() && qr.isClickable() && qr.hasFocus());
+
+        ac.pause().stop();
+        client.videoId = null;
+
+        ac.restart().resume();
+        Shadows.shadowOf(a.getMainLooper()).idle();
+
+        assertFalse("resume after a silent idle must make the QR not focusable", qr.isFocusable());
+        assertFalse("resume after a silent idle must make the QR not clickable", qr.isClickable());
+        View focused = a.getWindow().getDecorView().findFocus();
+        assertSame("resume after a silent idle must focus Browse, not " + name(focused),
+                browse, focused);
         ac.pause().stop().destroy();
     }
 
