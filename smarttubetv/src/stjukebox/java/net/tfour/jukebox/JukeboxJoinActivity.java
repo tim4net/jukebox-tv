@@ -245,14 +245,13 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         // keep re-running the controller's resume check for a short while so a
         // single mistimed check (the 2465 failure) can't leave the room silent.
         startResumeRetry("onResume");
-        // State first (arm the QR, move focus only when playback starts or stops).
-        // Then restore the default, unless the user is already on Browse.
+        // Restore the default (QR while playing, Browse while idle) unless
+        // Browse already has focus. onStart's listener re-register already
+        // armed the QR; this does not.
         if (mQrView == null) {
             return;
         }
-        JukeboxRoom room = JukeboxRoom.instance(this);
-        boolean roomPlaying = room.isActive() && room.getCurrentVideoId() != null;
-        View target = findViewById(defaultFocusId(roomPlaying));
+        View target = findViewById(defaultFocusId(isRoomPlaying()));
         if (target != null && (mBrowseView == null || !mBrowseView.hasFocus())) {
             target.requestFocus();
         }
@@ -344,6 +343,12 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         applyJoinFocus();
     }
 
+    /** Active room with a current video. Shared by resume focus and {@link #applyJoinFocus()}. */
+    private boolean isRoomPlaying() {
+        JukeboxRoom room = JukeboxRoom.instance(this);
+        return room.isActive() && room.getCurrentVideoId() != null;
+    }
+
     /**
      * Arms the QR join action while the room is playing. A state update moves
      * focus only when playback starts, or back to Browse when it stops while
@@ -355,8 +360,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         if (mQrView == null) {
             return;
         }
-        JukeboxRoom room = JukeboxRoom.instance(this);
-        boolean roomPlaying = room.isActive() && room.getCurrentVideoId() != null;
+        boolean roomPlaying = isRoomPlaying();
         boolean becamePlaying = roomPlaying && !mRoomSongActive;
         // setFocusable(false) clears focus, so read this before that call.
         boolean qrHadFocus = mQrView.hasFocus();
