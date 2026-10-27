@@ -67,7 +67,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     /**
      * The resume retry stopped because the room had no current song yet
      * ("resume skipped: idle room"), not because a known song was opened or
-     * rejected. Room-ready's {@link #bind} runs {@link #applyJoinFocus(boolean)}
+     * rejected. Room-ready's {@link #bind} runs {@link #applyJoinFocus()}
      * before {@link #onStateChanged}, so that callback can see the room as
      * already playing and skip its idle-to-playing ask. The next room update
      * or state that names a song must ask once, then this is cleared.
@@ -245,8 +245,18 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         // keep re-running the controller's resume check for a short while so a
         // single mistimed check (the 2465 failure) can't leave the room silent.
         startResumeRetry("onResume");
-        // Idle -> Browse. Playing -> QR, unless the user has moved to Browse.
-        applyJoinFocus(true);
+        // State first (arm the QR, move focus only when playback starts or stops).
+        // Then restore the default, unless the user is already on Browse.
+        applyJoinFocus();
+        if (mQrView == null) {
+            return;
+        }
+        JukeboxRoom room = JukeboxRoom.instance(this);
+        boolean roomPlaying = room.isActive() && room.getCurrentVideoId() != null;
+        View target = findViewById(defaultFocusId(roomPlaying));
+        if (target != null && (mBrowseView == null || !mBrowseView.hasFocus())) {
+            target.requestFocus();
+        }
     }
 
     @Override
@@ -332,18 +342,17 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         mStatusView.setText(status != null ? status : "");
         mNowPlayingView.setText(nowPlaying != null && !nowPlaying.isEmpty()
                 ? getString(R.string.jukebox_now_playing, nowPlaying) : "");
-        applyJoinFocus(false);
+        applyJoinFocus();
     }
 
     /**
-     * Arms the QR join action while the room is playing and moves focus to
-     * {@link #defaultFocusId(boolean)}. A state update moves focus only when playback
-     * starts, or back to Browse when it stops while the QR held focus. Resume
-     * restores that default, but does not pull focus off Browse once the user
-     * has moved there while the room stays playing. No-op before the join UI
+     * Arms the QR join action while the room is playing. A state update moves
+     * focus only when playback starts, or back to Browse when it stops while
+     * the QR held focus. Resume restores {@link #defaultFocusId(boolean)}
+     * itself, and does not pull focus off Browse. No-op before the join UI
      * exists (a forwarded launch has no views).
      */
-    private void applyJoinFocus(boolean fromResume) {
+    private void applyJoinFocus() {
         if (mQrView == null) {
             return;
         }
@@ -363,12 +372,10 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         if (roomPlaying) {
             if (becamePlaying && !target.hasFocus()) {
                 target.requestFocus();
-            } else if (fromResume && (mBrowseView == null || !mBrowseView.hasFocus())) {
-                target.requestFocus();
             }
             return;
         }
-        if (qrHadFocus || fromResume) {
+        if (qrHadFocus) {
             // Losing focusability does not restore the layout default.
             target.requestFocus();
         }
@@ -391,7 +398,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         mNowPlayingView.setText(nowPlaying != null && !nowPlaying.isEmpty()
                 ? getString(R.string.jukebox_now_playing, nowPlaying) : "");
         boolean wasPlaying = mRoomSongActive;
-        applyJoinFocus(false);
+        applyJoinFocus();
         if (!wasPlaying && mRoomSongActive && !isFinishing()) {
             // A snapshot-sourced id on the join screen is the room's current
             // song, not a fresh foreground snapshot waiting for its own play.
