@@ -17,13 +17,19 @@ import androidx.core.content.FileProvider;
 
 import com.liskovsoft.appupdatechecker2.AppUpdateChecker;
 import com.liskovsoft.appupdatechecker2.AppUpdateCheckerListener;
+import com.liskovsoft.sharedutils.helpers.DeviceHelpers;
 import com.liskovsoft.smartyoutubetv2.common.R;
 
 import net.tfour.jukebox.room.JukeboxForeground;
 import net.tfour.jukebox.room.JukeboxLog;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -362,8 +368,9 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
 
     /**
      * Pure item-1 decision: null when {@code url} is a download URL we may
-     * fetch (https, our host, path under /apk/ or /install/), else the logged
-     * reason it must be refused without downloading.
+     * fetch (https, our host, the default port only — implicit or explicit
+     * 443 — and a path under /apk/ or /install/), else the logged reason it
+     * must be refused without downloading.
      */
     static String invalidDownloadUrlReason(String url) {
         URL parsed;
@@ -374,6 +381,12 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         }
         if (!"https".equals(parsed.getProtocol())) {
             return "protocol " + parsed.getProtocol();
+        }
+        // Issue #9: only the https default port is ever fetched — an explicit
+        // other port (e.g. https://jukebox.tfour.net:8443/apk/x.apk) is refused.
+        int port = parsed.getPort();
+        if (port != -1 && port != 443) {
+            return "port " + port;
         }
         if (!DOWNLOAD_HOST.equals(parsed.getHost())) {
             return "host " + parsed.getHost();
@@ -752,15 +765,27 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
      * archive — PackageManager archive parsing stays the fallback. Our
      * release apks are v1+v2 signed (minSdk &lt; 24), so the v1 signer cert is
      * always in the archive. Logs which method produced the cert.
+     *
+     * Issue #9, item 4: when PackageManager ALSO returns a cert (the v2/v3
+     * block), it must equal the v1 (JarFile) cert — a genuine v1 signature
+     * plus a foreign v2 cert must NOT pass (null, refused).
      */
     protected String archiveSigningCertSha256(String path) {
         String jarCertSha256 = jarV1SigningCertSha256(path);
+        String packageManagerCertSha256 = packageManagerArchiveSigningCertSha256(path);
+        // Issue #9, item 4: v1 and package-manager certs must agree.
+        if (jarCertSha256 != null && packageManagerCertSha256 != null
+                && !jarCertSha256.trim().equalsIgnoreCase(packageManagerCertSha256.trim())) {
+            JukeboxLog.i(JukeboxUpdate.LOG_TAG, "archive signer: v1 jar cert "
+                    + jarCertSha256 + " != package-manager cert " + packageManagerCertSha256
+                    + " \u2014 refusing (genuine v1 + foreign v2 must not pass)");
+            return null;
+        }
         if (jarCertSha256 != null) {
             JukeboxLog.i(JukeboxUpdate.LOG_TAG,
                     "archive signer: jar-v1 (JarFile) cert " + jarCertSha256);
             return jarCertSha256;
         }
-        String packageManagerCertSha256 = packageManagerArchiveSigningCertSha256(path);
         JukeboxLog.i(JukeboxUpdate.LOG_TAG, "archive signer: "
                 + (packageManagerCertSha256 != null
                         ? "package-manager" : "none (jar-v1 + package-manager)"));
@@ -782,6 +807,12 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             Enumeration<JarEntry> entries = jar.entries();
             while (entries.hasMoreElements()) {
                 JarEntry entry = entries.nextElement();
+                // Issue #9, item 6: the META-INF skip below is INTENTIONAL —
+                // the v1 signature files (.SF/.RSA/.DSA) and the manifest are
+                // the signing machinery itself, not signed content: reading
+                // them as entries must never populate (or veto) the signer
+                // cert, and only non-META-INF entries carry the v1 digests
+                // that verify the archive.
                 if (entry.isDirectory()
                         || entry.getName().regionMatches(true, 0, "META-INF/", 0, 9)) {
                     continue;
@@ -835,8 +866,12 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
                 info.applicationInfo.publicSourceDir = path;
             }
             return signingCertSha256Of(info); // signingInfo first, then signatures
-        } catch (RuntimeException tolerated) {
-            return null; // archive parsing quirks are tolerated: JarFile is authoritative
+        } catch (RuntimeException | LinkageError tolerated) {
+            // Archive parsing quirks are tolerated (including the API 28
+            // v2/v3 verifier blowing up in sandboxes): JarFile v1 stays
+            // authoritative, a missing PackageManager cert never fails an
+            // otherwise-verified archive. Any other Error propagates.
+            return null;
         }
     }
 
@@ -854,14 +889,139 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
     }
 
     /**
-     * The manifest's optional sha256 for the offered apk, or null when
-     * absent (item 2): the manifest JSON behind {@link AppUpdateChecker}
-     * carries no per-apk sha256 entry today, so absent = skip the file
-     * hash check (the pinned-signer check above still guards the apk).
+     * The manifest's optional sha256 (hex) for the offered apk, or null when
+     * it supplies none for THIS download (item 2, issue #9: WIRED, no longer a
+     * null stub — a manifest sha256 is enforced by
+     * {@link #manifestSha256FailureReason}). The update manifest
+     * ({@link #resolveUrl()}, the same URL the check used) is re-fetched and
+     * its {@code package} entry consulted ONLY when it pins exactly the
+     * offered {@code downloadUrl} for this device (see
+     * {@link #apkSha256OfManifest}); a manifest naming a different apk — or
+     * none, or unparsable/unreachable — supplies no sha256 here = skip the
+     * file hash check (the pinned-signer check above still guards the apk).
+     * Never throws.
      */
     protected String manifestApkSha256(String downloadUrl) {
-        return null;
+        if (downloadUrl == null || downloadUrl.trim().isEmpty()) {
+            return null;
+        }
+        String manifestJson;
+        try {
+            manifestJson = downloadManifestJson(resolveUrl());
+        } catch (IOException | RuntimeException unfetchable) {
+            JukeboxLog.i(JukeboxUpdate.LOG_TAG, "manifest sha256: manifest unreadable ("
+                    + unfetchable + ") \u2014 skipping the file hash check");
+            return null;
+        }
+        String sha256 = apkSha256OfManifest(manifestJson, downloadUrl,
+                DeviceHelpers.getPrimaryAbi());
+        JukeboxLog.i(JukeboxUpdate.LOG_TAG, "manifest sha256: "
+                + (sha256 != null ? sha256 : "none supplied for " + downloadUrl));
+        return sha256;
     }
+
+    /**
+     * Pure issue-#9 item-2 decision: the manifest {@code package} entry's
+     * {@code apkSha256} (hex, trimmed) when the manifest pins exactly
+     * {@code downloadUrl} for this device, else null (absent / ambiguous /
+     * mismatched = skip the check). The URL resolution mirrors
+     * AppVersionChecker: {@code downloadUrlList_<primaryAbi>} first, then
+     * {@code downloadUrlList}, then the singular {@code downloadUrl}; a list
+     * pins this apk only when its single entry IS the offered URL.
+     */
+    static String apkSha256OfManifest(String manifestJson, String downloadUrl, String primaryAbi) {
+        if (manifestJson == null || downloadUrl == null) {
+            return null;
+        }
+        try {
+            JSONObject root = new JSONObject(manifestJson);
+            JSONObject packageEntry = root.optJSONObject("package");
+            if (packageEntry == null) {
+                return null; // no package entry: the manifest pins no apk
+            }
+            String sha256 = packageEntry.optString("apkSha256", "").trim();
+            if (sha256.isEmpty()) {
+                return null; // the manifest supplies no apk sha256: skip
+            }
+            String manifestUrl = null;
+            if (primaryAbi != null && packageEntry.has("downloadUrlList_" + primaryAbi)) {
+                manifestUrl = soleUrlOf(packageEntry.optJSONArray("downloadUrlList_" + primaryAbi));
+            } else if (packageEntry.has("downloadUrlList")) {
+                manifestUrl = soleUrlOf(packageEntry.optJSONArray("downloadUrlList"));
+            } else {
+                manifestUrl = packageEntry.optString("downloadUrl", null);
+            }
+            return downloadUrl.equals(manifestUrl) ? sha256 : null;
+        } catch (JSONException | RuntimeException malformed) {
+            return null; // unparsable manifest supplies nothing: skip
+        }
+    }
+
+    /** The list's single URL, or null when it is missing/empty/ambiguous. */
+    private static String soleUrlOf(JSONArray urls) {
+        if (urls == null || urls.length() != 1) {
+            return null; // more than one apk (or none): the sha256 pins neither
+        }
+        try {
+            String url = urls.getString(0);
+            return url != null && !url.trim().isEmpty() ? url : null;
+        } catch (JSONException malformed) {
+            return null;
+        }
+    }
+
+    /**
+     * Issue #9, item 2: the update manifest JSON behind {@link #resolveUrl()}
+     * (overridable I/O seam; tests fake it). Same hardening as apk downloads:
+     * redirects are never followed, only a direct HTTP 200 is accepted, and
+     * payloads above {@link #MANIFEST_MAX_BYTES} are refused. Never called on
+     * the main thread (verify runs off it).
+     */
+    protected String downloadManifestJson(String manifestUrl) throws IOException {
+        URL target = new URL(manifestUrl);
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) target.openConnection();
+            connection.setConnectTimeout(30_000);
+            connection.setReadTimeout(30_000);
+            connection.setInstanceFollowRedirects(false);
+            connection.connect();
+            if (!target.equals(connection.getURL())) {
+                throw new IOException("redirected to " + connection.getURL()
+                        + " (redirects are never followed)");
+            }
+            int code = connection.getResponseCode();
+            if (code != HttpURLConnection.HTTP_OK) {
+                throw new IOException("HTTP " + code
+                        + " (only 200 is accepted): " + manifestUrl);
+            }
+            long total = connection.getContentLengthLong();
+            if (total > MANIFEST_MAX_BYTES) {
+                throw new IOException("Content-Length " + total + " exceeds the "
+                        + MANIFEST_MAX_BYTES + " byte cap: " + manifestUrl);
+            }
+            try (InputStream in = new BufferedInputStream(connection.getInputStream())) {
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                byte[] buffer = new byte[8 * 1024];
+                int read;
+                while ((read = in.read(buffer)) > 0) {
+                    bytes.write(buffer, 0, read);
+                    if (bytes.size() > MANIFEST_MAX_BYTES) {
+                        throw new IOException("manifest exceeds the "
+                                + MANIFEST_MAX_BYTES + " byte cap: " + manifestUrl);
+                    }
+                }
+                return bytes.toString("UTF-8");
+            }
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    /** Manifest fetch byte cap, ~1MB (issue #9, item 2). */
+    private static final long MANIFEST_MAX_BYTES = 1024 * 1024;
 
     /** SHA-256 (hex) of a file on disk (item 2), or null when unreadable. */
     protected String sha256OfFile(File file) {

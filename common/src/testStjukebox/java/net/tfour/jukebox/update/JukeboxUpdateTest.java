@@ -256,6 +256,33 @@ public class JukeboxUpdateTest {
         assertNull("the card must not stay on the old activity's decor", cardOf(firstActivity));
     }
 
+    // ---- Issue #9, item 1: a destroyed activity's card must not stay the app-wide card ----
+
+    @Test
+    public void destroyingTheActivityTheCardBelongsToClearsTheVisibleCard() {
+        JukeboxUpdate.init(app);
+        ActivityController<Activity> controller = newActivity().setup();
+        Activity activity = controller.get();
+        JukeboxUpdatePresenter presenter = new JukeboxUpdatePresenter(app, () -> activity);
+        presenter.onUpdateFound("32.68", Arrays.asList("fix"), null);
+        assertNotNull("the card must be shown on the activity first", cardOf(activity));
+        assertNotNull("the shown card must be the app-wide visible card",
+                JukeboxUpdateCard.shownCard());
+
+        // The card's activity is destroyed: the static app-wide visible card
+        // must not keep pointing at it (a dead activity's decor must never
+        // stay keyed / movable app-wide — the key router answers for it).
+        controller.destroy();
+
+        assertNull("the destroyed activity's card must not stay the app-wide visible card",
+                JukeboxUpdateCard.shownCard());
+        // And it must never MOVE onto a newly resumed activity either.
+        ActivityController<Activity> second = newActivity().setup();
+        JukeboxUpdateCard.move(second.get());
+        assertNull("a destroyed activity's card must never move to a new activity",
+                cardOf(second.get()));
+    }
+
     private static View cardOf(Activity activity) {
         View decor = activity.getWindow().getDecorView();
         if (!(decor instanceof ViewGroup)) {
