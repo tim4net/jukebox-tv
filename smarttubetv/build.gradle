@@ -130,6 +130,11 @@ android {
             if (keystorePropertiesFile.exists()) {
                 signingConfig signingConfigs.release
             }
+            // debug-only: add x86_64 so the universal debug APK can install on the
+            // x86_64 CI emulator; AGP merges buildType abiFilters with defaultConfig's
+            ndk {
+                abiFilters "x86_64"
+            }
         }
     }
 
