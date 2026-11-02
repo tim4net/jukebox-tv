@@ -6,7 +6,7 @@ bash ./gradlew --no-daemon :smarttubetv:assembleStjukeboxDebug
 APK="$(ls smarttubetv/build/outputs/apk/stjukebox/debug/Jukebox_*_universal.apk)"
 adb install -r "$APK"
 
-adb logcat -c
+adb logcat -c || true
 # Leanback launch (Fire TV style); fall back to the phone launcher category
 adb shell monkey -p net.tfour.jukebox -c android.intent.category.LEANBACK_LAUNCHER 1 \
   || adb shell monkey -p net.tfour.jukebox -c android.intent.category.LAUNCHER 1
