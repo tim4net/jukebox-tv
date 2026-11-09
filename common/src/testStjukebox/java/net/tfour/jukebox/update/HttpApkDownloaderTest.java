@@ -1,7 +1,5 @@
 package net.tfour.jukebox.update;
 
-import android.content.Context;
-
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -24,13 +22,14 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 /**
  * Build 2475, review item 7 (+ item 1 redirect): the production HTTP
- * downloader ({@code JukeboxUpdatePresenter.downloadHttp}, real
+ * downloader ({@link HttpApkDownloader}, real
  * {@link java.net.HttpURLConnection} against a local HTTP server) must only
  * accept a direct HTTP 200, must treat any 3xx redirect as a failure
  * ({@code setInstanceFollowRedirects(false)}), must refuse downloads whose
@@ -43,21 +42,7 @@ import static org.junit.Assert.fail;
  */
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 28)
-public class JukeboxUpdateDownloadHttpTest {
-
-    /** Presenter exposing the PRODUCTION downloader (real HttpURLConnection). */
-    private static class TestPresenter extends JukeboxUpdatePresenter {
-        long maxBytes = 200L * 1024 * 1024;
-
-        TestPresenter(Context context) {
-            super(context, () -> null);
-        }
-
-        @Override
-        protected long maxDownloadBytes() {
-            return maxBytes;
-        }
-    }
+public class HttpApkDownloaderTest {
 
     /**
      * Tiny raw-socket HTTP server (com.sun.net.httpserver is not on the
@@ -119,7 +104,7 @@ public class JukeboxUpdateDownloadHttpTest {
     private static final JukeboxUpdatePresenter.ApkDownloader.Progress NO_PROGRESS = percent -> { };
 
     private RawHttpServer server;
-    private TestPresenter presenter;
+    private HttpApkDownloader downloader;
     private File dest;
     private File part;
 
@@ -128,7 +113,7 @@ public class JukeboxUpdateDownloadHttpTest {
         net.tfour.jukebox.room.JukeboxForeground.setTestOverride(true);
         ShadowLog.clear();
         server = new RawHttpServer();
-        presenter = new TestPresenter(RuntimeEnvironment.getApplication());
+        downloader = new HttpApkDownloader();
         dest = new File(RuntimeEnvironment.getApplication().getCacheDir(),
                 "jukebox-update-download-http.apk");
         part = new File(dest.getPath() + ".part");
@@ -151,7 +136,7 @@ public class JukeboxUpdateDownloadHttpTest {
         server.route("/ok", "HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\nfake apk payload");
         dest.getParentFile().mkdirs();
 
-        presenter.downloadHttp(url("/ok"), dest, NO_PROGRESS);
+        downloader.download(url("/ok"), dest, NO_PROGRESS);
 
         assertTrue("a 200 must be streamed to the dest file", dest.exists());
         assertArrayEquals("all response bytes must arrive",
@@ -167,7 +152,7 @@ public class JukeboxUpdateDownloadHttpTest {
         dest.getParentFile().mkdirs();
 
         try {
-            presenter.downloadHttp(url("/nocontent"), dest, NO_PROGRESS);
+            downloader.download(url("/nocontent"), dest, NO_PROGRESS);
             fail("a 204 response must fail the download (only HTTP 200 is accepted)");
         } catch (IOException expected) {
         }
@@ -184,7 +169,7 @@ public class JukeboxUpdateDownloadHttpTest {
         dest.getParentFile().mkdirs();
 
         try {
-            presenter.downloadHttp(url("/moved"), dest, NO_PROGRESS);
+            downloader.download(url("/moved"), dest, NO_PROGRESS);
             fail("a 3xx redirect must fail the download (redirects are never followed)");
         } catch (IOException expected) {
         }
@@ -200,7 +185,7 @@ public class JukeboxUpdateDownloadHttpTest {
         dest.getParentFile().mkdirs();
 
         try {
-            presenter.downloadHttp(url("/big"), dest, NO_PROGRESS);
+            downloader.download(url("/big"), dest, NO_PROGRESS);
             fail("a Content-Length above the cap must be refused before streaming");
         } catch (IOException expected) {
         }
@@ -211,19 +196,38 @@ public class JukeboxUpdateDownloadHttpTest {
     @Test
     public void streamedBytesAboveTheCapAbortTheDownload() throws Exception {
         // Cap lowered to 1KB via the seam: a 4KB body must abort mid-stream.
-        presenter.maxBytes = 1024;
+        downloader = new HttpApkDownloader(1024);
         byte[] body = new byte[4096];
         server.route("/big", "HTTP/1.1 200 OK\r\nContent-Length: " + body.length
                 + "\r\n\r\n" + new String(body, StandardCharsets.ISO_8859_1));
         dest.getParentFile().mkdirs();
 
         try {
-            presenter.downloadHttp(url("/big"), dest, NO_PROGRESS);
+            downloader.download(url("/big"), dest, NO_PROGRESS);
             fail("streaming more than the cap must abort the download");
         } catch (IOException expected) {
         }
         assertFalse("the .part file must be deleted when the cap aborts", part.exists());
         assertFalse(dest.exists());
+    }
+
+    @Test
+    public void knownLengthDownloadReportsProgressThroughTheThrottle() throws Exception {
+        server.route("/ok", "HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\nfake apk payload");
+        dest.getParentFile().mkdirs();
+        java.util.List<Integer> reported = new java.util.ArrayList<>();
+
+        downloader.download(url("/ok"), dest, reported::add);
+
+        assertEquals("one 16-byte chunk of a 16-byte body reports 100% once",
+                java.util.Collections.singletonList(100), reported);
+    }
+
+    @Test
+    public void presenterCreatesTheHttpApkDownloader() {
+        assertTrue("createDownloader() must return the production HttpApkDownloader",
+                new JukeboxUpdatePresenter(RuntimeEnvironment.getApplication(), () -> null)
+                        .createDownloader() instanceof HttpApkDownloader);
     }
 
     private static byte[] readAll(File file) throws IOException {

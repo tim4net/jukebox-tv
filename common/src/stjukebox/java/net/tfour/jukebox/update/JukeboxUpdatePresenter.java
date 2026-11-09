@@ -28,14 +28,11 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -127,9 +124,6 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
                     + " > Install unknown apps > Jukebox: ON, then come back";
     /** Issue #7: the Fire OS (Amazon) system feature, when it exists. */
     static final String FIRE_TV_SYSTEM_FEATURE = "amazon.hardware.fire_tv";
-    /** Log/download progress step sizes. */
-    private static final long PROGRESS_BYTES_STEP = 2 * 1024 * 1024; // ~2MB
-    private static final int PROGRESS_PERCENT_STEP = 10; // ~10%
 
     /** Supplies the currently resumed activity (where the prompt card attaches). */
     public interface CurrentActivity {
@@ -464,7 +458,7 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
                     "download start: url=" + url + " dest=" + destFile);
             runOnMain(() -> cardText("Downloading update\u2026 0%"));
             try {
-                downloader().download(url, destFile, percent -> {
+                createDownloader().download(url, destFile, percent -> {
                     JukeboxLog.i(JukeboxUpdate.LOG_TAG,
                             "download progress: " + percent + "% (" + url + ")");
                     runOnMain(() -> cardText("Downloading update\u2026 " + percent + "%"));
@@ -472,7 +466,7 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             } catch (Throwable error) {
                 JukeboxLog.e(JukeboxUpdate.LOG_TAG, "download failed: " + error, error);
                 delete(destFile);
-                delete(partOf(destFile));
+                delete(HttpApkDownloader.partOf(destFile));
                 runOnMain(() -> cardText("Update download failed \u2014 will retry next time"));
                 return;
             }
@@ -530,10 +524,6 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
                 && !(keepName != null && name.equals(keepName + ".part"));
     }
 
-    private static File partOf(File destFile) {
-        return new File(destFile.getPath() + ".part");
-    }
-
     /**
      * Pure download decision (the I/O sits at the edges): verify the file,
      * log every check, then launch the installer — or, while the app is
@@ -552,7 +542,7 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             JukeboxLog.i(JukeboxUpdate.LOG_TAG,
                     "verify failed: " + bad + " \u2014 deleting, will retry next time");
             delete(new File(path));
-            delete(partOf(new File(path)));
+            delete(HttpApkDownloader.partOf(new File(path)));
             setPendingInstall(null, null);
             runOnMain(() -> cardText("Update download failed \u2014 will retry next time"));
             return;
@@ -723,13 +713,9 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
 
     // ---- overridable I/O seams (tests fake these) ----
 
-    /** Production downloader: HttpURLConnection streaming to .part, then rename. */
+    /** Production downloader: {@link HttpApkDownloader} (streams to .part, then renames). */
     protected ApkDownloader createDownloader() {
-        return (url, destFile, progress) -> downloadHttp(url, destFile, progress);
-    }
-
-    private ApkDownloader downloader() {
-        return createDownloader();
+        return new HttpApkDownloader();
     }
 
     /** Production installer: FileProvider content URI + ACTION_VIEW (+grant, new task). */
@@ -1079,11 +1065,6 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         return hex.toString().toUpperCase();
     }
 
-    /** Download byte cap, ~200MB (item 7). */
-    protected long maxDownloadBytes() {
-        return 200L * 1024 * 1024;
-    }
-
     /**
      * Nina's 2473 gazebo item (c): true when this app may install packages
      * (API&lt;26 always — the unknown-apps setting does not exist there),
@@ -1093,87 +1074,6 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
     protected boolean canRequestPackageInstalls() {
         return Build.VERSION.SDK_INT < 26
                 || mAppContext.getPackageManager().canRequestPackageInstalls();
-    }
-
-    /**
-     * Streams the url into {@code destFile}.part and renames to
-     * {@code destFile} on success. Logs progress every ~10% (known length) or
-     * every ~2MB. Build 2475, item 7: redirects are never followed
-     * ({@code setInstanceFollowRedirects(false)}, plus a getURL() re-check),
-     * only a direct HTTP 200 is accepted, sizes above
-     * {@link #maxDownloadBytes()} (Content-Length and streamed count) are
-     * refused, and the {@code .part} file is deleted on ANY failure.
-     */
-    protected void downloadHttp(String url, File destFile, ApkDownloader.Progress progress)
-            throws IOException {
-        File dir = destFile.getParentFile();
-        if (dir != null && !dir.exists() && !dir.mkdirs()) {
-            throw new IOException("cannot create " + dir);
-        }
-        File part = partOf(destFile);
-        long cap = maxDownloadBytes();
-        URL target = new URL(url);
-        HttpURLConnection connection = null;
-        try {
-            connection = (HttpURLConnection) target.openConnection();
-            connection.setConnectTimeout(30_000);
-            connection.setReadTimeout(30_000);
-            connection.setInstanceFollowRedirects(false);
-            connection.connect();
-            if (!target.equals(connection.getURL())) {
-                throw new IOException("redirected to " + connection.getURL()
-                        + " (redirects are never followed)");
-            }
-            int code = connection.getResponseCode();
-            if (code != HttpURLConnection.HTTP_OK) {
-                throw new IOException("HTTP " + code + " (only 200 is accepted): " + url);
-            }
-            long total = connection.getContentLengthLong();
-            if (total > cap) {
-                throw new IOException("Content-Length " + total + " exceeds the "
-                        + cap + " byte cap: " + url);
-            }
-            try (InputStream rawIn = new BufferedInputStream(connection.getInputStream());
-                 OutputStream out = new BufferedOutputStream(new FileOutputStream(part))) {
-                byte[] buffer = new byte[64 * 1024];
-                long done = 0;
-                long lastLoggedBytes = 0;
-                int nextLoggedPercent = PROGRESS_PERCENT_STEP;
-                int read;
-                while ((read = rawIn.read(buffer)) > 0) {
-                    out.write(buffer, 0, read);
-                    done += read;
-                    if (done > cap) {
-                        throw new IOException("download exceeds the " + cap
-                                + " byte cap (" + done + " bytes): " + url);
-                    }
-                    int percent = total > 0 ? (int) Math.min(100, done * 100 / total) : 0;
-                    boolean percentStep = total > 0 && percent >= nextLoggedPercent;
-                    boolean byteStep = done - lastLoggedBytes >= PROGRESS_BYTES_STEP;
-                    if (percentStep || byteStep) {
-                        if (percentStep) {
-                            nextLoggedPercent += PROGRESS_PERCENT_STEP;
-                        } else {
-                            lastLoggedBytes = done;
-                        }
-                        JukeboxLog.i(JukeboxUpdate.LOG_TAG, "download progress: " + percent
-                                + "% " + done + "/" + (total > 0 ? total : "?") + " bytes");
-                        progress.onProgress(percent);
-                    }
-                }
-            }
-        } catch (IOException | RuntimeException failure) {
-            delete(part);
-            throw failure;
-        } finally {
-            if (connection != null) {
-                connection.disconnect();
-            }
-        }
-        if (!part.renameTo(destFile)) {
-            delete(part);
-            throw new IOException("cannot rename " + part + " to " + destFile);
-        }
     }
 
     /**
