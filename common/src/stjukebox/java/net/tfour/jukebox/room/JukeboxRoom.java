@@ -90,8 +90,19 @@ public final class JukeboxRoom {
                     // Open the video BEFORE notifying the listeners: onStateChanged
                     // runs the controller's resume check, which must already see this
                     // load in flight (onNewVideo) — or it would open the same video a
-                    // second time, cancelling this load.
-                    PlaybackPresenter.instance(mAppContext).openVideo(videoId);
+                    // second time, cancelling this load. The marker is only dropped
+                    // here when that open did not start a player (app backgrounded
+                    // between the check above and the launch). A player that has
+                    // not attached yet is still a normal pending load.
+                    PlaybackPresenter presenter = PlaybackPresenter.instance(mAppContext);
+                    presenter.openVideo(videoId);
+                    if (!JukeboxForeground.isAppInForeground()) {
+                        JukeboxRoomController controller =
+                                presenter.getController(JukeboxRoomController.class);
+                        if (controller != null) {
+                            controller.clearLoadThatNeverStarted();
+                        }
+                    }
                 }
                 for (Listener listener : mListeners) {
                     listener.onStateChanged(title);

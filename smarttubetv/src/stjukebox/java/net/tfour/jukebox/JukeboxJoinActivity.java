@@ -46,6 +46,14 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     private static final long[] RESUME_RETRY_DELAYS_MS = {0, 1500, 3000, 5000, 8000, 12000};
 
     private ImageView mQrView;
+    /** The layout's own default-focus view; handed focus back when the room goes idle. */
+    private Button mBrowseView;
+    /**
+     * Last room-playing answer applied to focus. Default focus moves to the
+     * join action only on the idle-to-playing transition, not on every
+     * state or onResume.
+     */
+    private boolean mRoomSongActive;
     private TextView mCodeView;
     private TextView mStatusView;
     private TextView mNowPlayingView;
@@ -55,6 +63,15 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     private final Handler mResumeRetryHandler = new Handler();
     private int mResumeRetryIndex;
     private String mResumeRetryVia;
+    /**
+     * The resume retry stopped because the room had no current song yet
+     * ("resume skipped: idle room"), not because a known song was opened or
+     * rejected. Room-ready's {@link #bind} runs {@link #updateDefaultFocus}
+     * before {@link #onStateChanged}, so that callback can see the room as
+     * already playing and skip its idle-to-playing ask. The next room update
+     * or state that names a song must ask once, then this is cleared.
+     */
+    private boolean mResumeSkippedIdle;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -67,6 +84,17 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         setContentView(R.layout.jukebox_join);
 
         mQrView = findViewById(R.id.jukebox_qr);
+        // One listener for the life of the screen. It is armed only while a
+        // room song is active; setOnClickListener forces clickable, so clear
+        // that until updateDefaultFocus.
+        mQrView.setOnClickListener(v -> {
+            if (!mRoomSongActive) {
+                return;
+            }
+            JukeboxLog.i("JukeboxJoin", "join action (OK on QR): opening the player at the room video");
+            startResumeRetry("onOk");
+        });
+        mQrView.setClickable(false);
         mCodeView = findViewById(R.id.jukebox_code);
         mStatusView = findViewById(R.id.jukebox_status);
         mNowPlayingView = findViewById(R.id.jukebox_now_playing);
@@ -76,6 +104,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         hintView.setText(getString(R.string.jukebox_join_hint, host));
 
         Button browseButton = findViewById(R.id.jukebox_browse);
+        mBrowseView = browseButton;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             // Theme tint would wash out the focused-state color.
             browseButton.setBackgroundTintList(null);
@@ -205,6 +234,7 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         // keep re-running the controller's resume check for a short while so a
         // single mistimed check (the 2465 failure) can't leave the room silent.
         startResumeRetry("onResume");
+        updateDefaultFocus();
     }
 
     @Override
@@ -255,8 +285,10 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
                 // idle room, already playing): stop asking instead of logging
                 // the same deferral on every remaining tick. The decision itself
                 // was logged by the controller.
+                rememberIdleResumeSkip();
                 return;
             }
+            mResumeSkippedIdle = false;
             postNextResumeRetry();
         };
         if (delay == 0L) {
@@ -288,12 +320,46 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         mStatusView.setText(status != null ? status : "");
         mNowPlayingView.setText(nowPlaying != null && !nowPlaying.isEmpty()
                 ? getString(R.string.jukebox_now_playing, nowPlaying) : "");
+        updateDefaultFocus();
+    }
+
+    /**
+     * While the room is playing, OK on the QR opens the player at the room
+     * video. Default focus moves onto that join action only on the
+     * idle-to-playing transition: a later state or onResume must not pull
+     * focus off Browse once the user has moved there. With no room song the
+     * layout default (Browse) stays, and a playing-to-idle transition hands
+     * focus back to it explicitly.
+     */
+    private void updateDefaultFocus() {
+        if (mQrView == null) {
+            return; // forwarded launch: no UI was created
+        }
+        JukeboxRoom room = JukeboxRoom.instance(this);
+        boolean roomPlaying = room.isActive() && room.getCurrentVideoId() != null;
+        boolean becamePlaying = roomPlaying && !mRoomSongActive;
+        // setFocusable(false) clears focus, so read this before that call.
+        boolean qrHadFocus = mQrView.hasFocus();
+        mRoomSongActive = roomPlaying;
+        mQrView.setFocusable(roomPlaying);
+        mQrView.setClickable(roomPlaying);
+        if (roomPlaying) {
+            if (becamePlaying && !mQrView.hasFocus()) {
+                mQrView.requestFocus();
+            }
+        } else if (qrHadFocus && mBrowseView != null) {
+            // The room went idle while the join action held focus: hand the
+            // default back to the layout's own default (Browse). Losing
+            // focusability does not restore it.
+            mBrowseView.requestFocus();
+        }
     }
 
     @Override
     public void onRoomUpdated() {
         JukeboxRoom room = JukeboxRoom.instance(this);
         bind(room.getCode(), room.getJoinUrl(), room.getStatus(), room.getNowPlaying());
+        resumeSkippedIdleIfSongKnown("onRoom");
     }
 
     @Override
@@ -305,6 +371,55 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     public void onStateChanged(String nowPlaying) {
         mNowPlayingView.setText(nowPlaying != null && !nowPlaying.isEmpty()
                 ? getString(R.string.jukebox_now_playing, nowPlaying) : "");
+        boolean wasPlaying = mRoomSongActive;
+        updateDefaultFocus();
+        if (!wasPlaying && mRoomSongActive && !isFinishing()) {
+            // A snapshot-sourced id on the join screen is the room's current
+            // song, not a fresh foreground snapshot waiting for its own play.
+            askRoomResume("onState");
+        } else {
+            resumeSkippedIdleIfSongKnown("onState");
+        }
+    }
+
+    /**
+     * Arms {@link #mResumeSkippedIdle} only for "no current song yet" on an
+     * active room. A finished answer about a known song (opened, already
+     * playing, cap) leaves the one-shot disarmed.
+     */
+    private void rememberIdleResumeSkip() {
+        JukeboxRoom room = JukeboxRoom.instance(this);
+        mResumeSkippedIdle = room.isActive() && room.getCurrentVideoId() == null;
+    }
+
+    /** One ask after an idle skip, once a room update or state names a song. */
+    private void resumeSkippedIdleIfSongKnown(String retryVia) {
+        if (!mResumeSkippedIdle || isFinishing()) {
+            return;
+        }
+        JukeboxRoom room = JukeboxRoom.instance(this);
+        if (!room.isActive() || room.getCurrentVideoId() == null) {
+            return;
+        }
+        askRoomResume(retryVia);
+    }
+
+    /**
+     * One resume check. A missing controller, or a check that says a later
+     * try could still succeed, restarts the bounded retry. Otherwise the
+     * one-shot is armed only when the room still has no current song.
+     */
+    private void askRoomResume(String via) {
+        mResumeSkippedIdle = false;
+        JukeboxRoomController controller = PlaybackPresenter.instance(this)
+                .getController(JukeboxRoomController.class);
+        if (controller == null || controller.resumeRoomSongIfNeeded("join:" + via)) {
+            startResumeRetry(via);
+            return;
+        }
+        // Opened, or retrying cannot help. If the song vanished mid-ask,
+        // stay armed for the next update that names one.
+        rememberIdleResumeSkip();
     }
 
     /** Renders a QR code of {@code text} into a square bitmap, or null on failure. */
