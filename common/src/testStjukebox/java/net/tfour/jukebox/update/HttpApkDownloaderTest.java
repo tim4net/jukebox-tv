@@ -131,6 +131,12 @@ public class HttpApkDownloaderTest {
         return "http://localhost:" + server.port() + path;
     }
 
+    /** A raw HTTP 200 response carrying {@code body} with its exact Content-Length. */
+    private static String ok200(byte[] body) {
+        return "HTTP/1.1 200 OK\r\nContent-Length: " + body.length
+                + "\r\n\r\n" + new String(body, StandardCharsets.ISO_8859_1);
+    }
+
     @Test
     public void http200DownloadsAllBytesAndLeavesNoPart() throws Exception {
         server.route("/ok", "HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\nfake apk payload");
@@ -141,6 +147,22 @@ public class HttpApkDownloaderTest {
         assertTrue("a 200 must be streamed to the dest file", dest.exists());
         assertArrayEquals("all response bytes must arrive",
                 "fake apk payload".getBytes(StandardCharsets.UTF_8), readAll(dest));
+        assertFalse("the .part file must be gone after the rename", part.exists());
+    }
+
+    @Test
+    public void oneByteBodyLands() throws Exception {
+        // A read() of exactly 1 byte is still body data: the loop condition
+        // must accept it (> 0, not > 1).
+        server.route("/one-byte", ok200(new byte[] {42}));
+        dest.getParentFile().mkdirs();
+
+        downloader.download(url("/one-byte"), dest, NO_PROGRESS);
+
+        assertTrue("a 1-byte body must land", dest.exists());
+        assertEquals("exactly one body byte must arrive", 1, dest.length());
+        assertArrayEquals("the single body byte must be the payload byte",
+                new byte[] {42}, readAll(dest));
         assertFalse("the .part file must be gone after the rename", part.exists());
     }
 
@@ -195,11 +217,13 @@ public class HttpApkDownloaderTest {
 
     @Test
     public void streamedBytesAboveTheCapAbortTheDownload() throws Exception {
-        // Cap lowered to 1KB via the seam: a 4KB body must abort mid-stream.
+        // Cap lowered to 1KB via the seam: a 4KB body with NO Content-Length
+        // (Connection: close instead) must abort mid-stream — only the
+        // streamed-count check can catch it.
         downloader = new HttpApkDownloader(1024);
         byte[] body = new byte[4096];
-        server.route("/big", "HTTP/1.1 200 OK\r\nContent-Length: " + body.length
-                + "\r\n\r\n" + new String(body, StandardCharsets.ISO_8859_1));
+        server.route("/big", "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"
+                + new String(body, StandardCharsets.ISO_8859_1));
         dest.getParentFile().mkdirs();
 
         try {
@@ -212,15 +236,130 @@ public class HttpApkDownloaderTest {
     }
 
     @Test
+    public void multiChunkBodyOverTheCapAborts() throws Exception {
+        // A 200KB header-less body over a 100KB cap: the 64KB read buffer
+        // means no single read exceeds the cap, so only the running total
+        // (done += read) can trip it.
+        downloader = new HttpApkDownloader(100 * 1024);
+        byte[] body = new byte[200 * 1024];
+        server.route("/multi-chunk", "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"
+                + new String(body, StandardCharsets.ISO_8859_1));
+        dest.getParentFile().mkdirs();
+
+        try {
+            downloader.download(url("/multi-chunk"), dest, NO_PROGRESS);
+            fail("a multi-chunk body whose running total exceeds the cap must abort");
+        } catch (IOException expected) {
+        }
+        assertFalse("the .part file must be deleted when the cap aborts", part.exists());
+        assertFalse(dest.exists());
+    }
+
+    @Test
+    public void defaultCapIs200MbAndNoArgConstructorUsesIt() throws Exception {
+        assertEquals(200L * 1024 * 1024, HttpApkDownloader.DEFAULT_MAX_BYTES);
+        downloader = new HttpApkDownloader();
+        server.route("/default-cap", ok200(new byte[4096]));
+        dest.getParentFile().mkdirs();
+
+        downloader.download(url("/default-cap"), dest, NO_PROGRESS);
+
+        assertTrue("a 4096-byte body is far under the default cap: it must land",
+                dest.exists());
+        assertEquals("all 4096 bytes must arrive", 4096, dest.length());
+        assertFalse("the .part file must be gone after the rename", part.exists());
+    }
+
+    @Test
+    public void bodyOfExactlyTheCapSucceeds() throws Exception {
+        downloader = new HttpApkDownloader(1024);
+        server.route("/exact", ok200(new byte[1024]));
+        dest.getParentFile().mkdirs();
+
+        downloader.download(url("/exact"), dest, NO_PROGRESS);
+
+        assertTrue("a body of exactly the cap must succeed", dest.exists());
+        assertEquals(1024, dest.length());
+        assertFalse("the .part file must be gone after the rename", part.exists());
+    }
+
+    @Test
+    public void bodyOfExactlyTheCapWithoutContentLengthSucceeds() throws Exception {
+        // Pins the streamed-count boundary: done == cap must NOT abort, so a
+        // header-less (Connection: close) body of exactly the cap succeeds.
+        downloader = new HttpApkDownloader(1024);
+        byte[] body = new byte[1024];
+        server.route("/exact-unknown-length", "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"
+                + new String(body, StandardCharsets.ISO_8859_1));
+        dest.getParentFile().mkdirs();
+
+        downloader.download(url("/exact-unknown-length"), dest, NO_PROGRESS);
+
+        assertTrue("a header-less body of exactly the cap must succeed", dest.exists());
+        assertEquals(1024, dest.length());
+        assertFalse("the .part file must be gone after the rename", part.exists());
+    }
+
+    @Test
+    public void missingParentDirIsCreated() throws Exception {
+        dest = new File(RuntimeEnvironment.getApplication().getCacheDir(),
+                "jukebox-missing-" + System.nanoTime() + "/nested/x.apk");
+        part = new File(dest.getPath() + ".part");
+        server.route("/nested", ok200(new byte[200]));
+        try {
+            downloader.download(url("/nested"), dest, NO_PROGRESS);
+            assertTrue("the missing parent dirs must be created and the file land there",
+                    dest.exists());
+        } finally {
+            dest.delete();
+            File nested = dest.getParentFile();
+            if (nested != null) {
+                nested.delete();
+                File missing = nested.getParentFile();
+                if (missing != null) {
+                    missing.delete();
+                }
+            }
+        }
+    }
+
+    @Test
+    public void renameFailureDeletesThePart() throws Exception {
+        // dest occupied by a NON-EMPTY directory: the rename must fail and the
+        // staged .part must be deleted.
+        assertTrue("dest must start as a non-empty directory", dest.mkdirs());
+        File inside = new File(dest, "occupied");
+        try {
+            assertTrue(inside.createNewFile());
+            server.route("/ok", ok200("rename me".getBytes(StandardCharsets.UTF_8)));
+            try {
+                downloader.download(url("/ok"), dest, NO_PROGRESS);
+                fail("renaming onto a non-empty directory must fail the download");
+            } catch (IOException expected) {
+            }
+            assertFalse("the .part file must be deleted when the rename fails", part.exists());
+        } finally {
+            inside.delete();
+            dest.delete();
+        }
+    }
+
+    @Test
     public void knownLengthDownloadReportsProgressThroughTheThrottle() throws Exception {
         server.route("/ok", "HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\nfake apk payload");
         dest.getParentFile().mkdirs();
         java.util.List<Integer> reported = new java.util.ArrayList<>();
+        java.util.List<Boolean> partExistedAtReport = new java.util.ArrayList<>();
 
-        downloader.download(url("/ok"), dest, reported::add);
+        downloader.download(url("/ok"), dest, percent -> {
+            reported.add(percent);
+            partExistedAtReport.add(part.exists());
+        });
 
         assertEquals("one 16-byte chunk of a 16-byte body reports 100% once",
                 java.util.Collections.singletonList(100), reported);
+        assertEquals("progress must be reported while the body is staged in the .part file",
+                java.util.Collections.singletonList(true), partExistedAtReport);
     }
 
     @Test

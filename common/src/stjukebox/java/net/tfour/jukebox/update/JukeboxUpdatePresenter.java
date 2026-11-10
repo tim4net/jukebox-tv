@@ -703,7 +703,7 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         }
     }
 
-    private static void delete(File file) {
+    static void delete(File file) {
         // No RuntimeException swallowing: a delete that blows up propagates to
         // the caller's own failure handling (logged there), never hidden here.
         if (file != null && file.exists() && !file.delete()) {

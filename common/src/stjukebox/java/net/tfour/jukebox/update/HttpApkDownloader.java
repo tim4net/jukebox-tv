@@ -48,9 +48,11 @@ class HttpApkDownloader implements JukeboxUpdatePresenter.ApkDownloader {
         HttpURLConnection connection = null;
         try {
             connection = openChecked(target, url);
-            stream(connection, part, url, progress);
+            long total = connection.getContentLengthLong();
+            checkLength(total, url);
+            stream(connection, total, part, url, progress);
         } catch (IOException | RuntimeException failure) {
-            delete(part);
+            JukeboxUpdatePresenter.delete(part);
             throw failure;
         } finally {
             if (connection != null) {
@@ -67,7 +69,7 @@ class HttpApkDownloader implements JukeboxUpdatePresenter.ApkDownloader {
         }
     }
 
-    /** Connects and refuses redirects / non-200 / over-cap lengths up front. */
+    /** Connects and refuses redirects / non-200 responses up front. */
     private HttpURLConnection openChecked(URL target, String url) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) target.openConnection();
         connection.setConnectTimeout(30_000);
@@ -82,18 +84,20 @@ class HttpApkDownloader implements JukeboxUpdatePresenter.ApkDownloader {
         if (code != HttpURLConnection.HTTP_OK) {
             throw new IOException("HTTP " + code + " (only 200 is accepted): " + url);
         }
-        long total = connection.getContentLengthLong();
+        return connection;
+    }
+
+    /** Refuses an over-cap Content-Length before any body byte is streamed. */
+    private void checkLength(long total, String url) throws IOException {
         if (total > mMaxBytes) {
             throw new IOException("Content-Length " + total + " exceeds the "
                     + mMaxBytes + " byte cap: " + url);
         }
-        return connection;
     }
 
     /** Streams the response body into {@code part} under the byte cap. */
-    private void stream(HttpURLConnection connection, File part, String url,
+    private void stream(HttpURLConnection connection, long total, File part, String url,
             Progress progress) throws IOException {
-        long total = connection.getContentLengthLong();
         try (InputStream rawIn = new BufferedInputStream(connection.getInputStream());
              OutputStream out = new BufferedOutputStream(new FileOutputStream(part))) {
             byte[] buffer = new byte[64 * 1024];
@@ -124,16 +128,8 @@ class HttpApkDownloader implements JukeboxUpdatePresenter.ApkDownloader {
 
     private static void renameInto(File part, File destFile) throws IOException {
         if (!part.renameTo(destFile)) {
-            delete(part);
+            JukeboxUpdatePresenter.delete(part);
             throw new IOException("cannot rename " + part + " to " + destFile);
-        }
-    }
-
-    private static void delete(File file) {
-        // No RuntimeException swallowing: a delete that blows up propagates to
-        // the caller's own failure handling (logged there), never hidden here.
-        if (file != null && file.exists() && !file.delete()) {
-            file.deleteOnExit();
         }
     }
 }
