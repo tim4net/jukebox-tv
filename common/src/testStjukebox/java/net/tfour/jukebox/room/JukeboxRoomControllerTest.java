@@ -75,6 +75,11 @@ public class JukeboxRoomControllerTest {
                     public Object invoke(Object proxy, Method method, Object[] args) {
                         playerCalls.add(args == null || args.length == 0 ? method.getName()
                                 : method.getName() + ":" + java.util.Arrays.toString(args));
+                        // onPlayEnd reports "ended" only once the playhead is within
+                        // 2s of a known duration. These stand in for a real end so
+                        // the existing end-of-song cases stay ends.
+                        if ("getPositionMs".equals(method.getName())) return 179_000L;
+                        if ("getDurationMs".equals(method.getName())) return 180_000L;
                         Class<?> type = method.getReturnType();
                         if (type == boolean.class) return false;
                         if (type == int.class) return 0;
