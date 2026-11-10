@@ -178,3 +178,8 @@ Findings from the 2464 device run (`.nina-2464.txt`) and their fixes:
   self-update path was audited: the install dialog is already foreground-gated
   (`AppUpdatePresenter.showUpdateDialog()`), the fallback offer pins a browse row (no launch),
   and `installUpdate()` only runs from user taps.
+  - Build 2503 (issue #32) adds two exceptions, still without foregrounding anything: a
+    backgrounded open is allowed **into a live engine** (`hasLiveEngine()`, `openVideo` calls
+    `onNewVideo` before the still-gated `startView`), and after a **real room-song end** a
+    "state" snapshot of the NEXT song opens it instead of waiting for its own "play" — no
+    activity is ever started over Fire Home.
