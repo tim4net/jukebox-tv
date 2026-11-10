@@ -11,6 +11,8 @@ import com.liskovsoft.smartyoutubetv2.common.app.models.playback.BasePlayerContr
 import com.liskovsoft.smartyoutubetv2.common.app.views.PlaybackView;
 import com.liskovsoft.smartyoutubetv2.common.app.views.ViewManager;
 
+import java.util.List;
+
 /**
  * Bridges playback events into the jukebox room (stjukebox flavor only; other flavors
  * never contain this class — PlaybackPresenter loads it reflectively). All callbacks are
@@ -75,6 +77,8 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
      * load makes it moot.
      */
     private final Runnable mResumeCheck = this::maybeResumeRoomSong;
+    /** Shows the lower-third cards at most once per now-playing songId. */
+    private final JukeboxLowerThirdPlan.Guard mLowerThirdGuard = new JukeboxLowerThirdPlan.Guard();
 
     private final Runnable mHeartbeat = new Runnable() {
         @Override
@@ -234,8 +238,9 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     @Override
     public void onPlayEnd() {
         stopHeartbeat();
-        // Playback of the room song is over: drop any pop-up bubbles.
+        // Playback of the room song is over: drop any pop-up bubbles and lower-third cards.
         dismissPopupOverlay();
+        dismissLowerThird();
         if (!JukeboxRoom.isRoomActive()) {
             return;
         }
@@ -260,6 +265,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         mResumeAfterReturn = true; // the app went away mid-song: the return resume opens the song
         mLastResumeLog = null; // the next decision may repeat a line: log it fresh
         dismissPopupOverlay();
+        dismissLowerThird();
         // Entering JukeboxJoinActivity mid-song runs its onStart() -> start() ->
         // notifyRebind() BEFORE ActivityThread dispatches PlaybackActivity.onStop()
         // -> this callback, so the earlier resume checks all saw a non-null
@@ -288,6 +294,7 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     public void onStateChanged(String nowPlaying) {
         // Badge does not show the now-playing title.
         updatePopupOverlay();
+        updateLowerThird();
         maybeResumeRoomSong();
     }
 
@@ -771,6 +778,53 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         Activity activity = getActivity();
         if (activity != null) {
             JukeboxPopupOverlay.dismiss(activity);
+        }
+    }
+
+    /**
+     * Shows the dedication/trivia lower-third cards for a NEW now-playing song
+     * (exactly once per songId, independent of the pop-ups toggle), mirroring
+     * {@link #updatePopupOverlay()}'s host-activity checks. Dismisses when the
+     * room is inactive or idle (no now-playing songId).
+     */
+    private void updateLowerThird() {
+        Activity activity = getActivity();
+        PlaybackView player = getPlayer();
+        Activity host = player != null ? ViewManager.getMotherActivity(player) : null;
+        if (activity == null || host == null || activity != host) {
+            return;
+        }
+        Context ctx = getContext();
+        if (ctx == null) {
+            return;
+        }
+        if (!JukeboxRoom.isRoomActive()) {
+            JukeboxLowerThird.dismiss(activity);
+            return;
+        }
+        JukeboxRoom room = JukeboxRoom.instance(ctx);
+        String songId = room.getNowPlayingSongId();
+        if (songId == null) {
+            JukeboxLowerThird.dismiss(activity); // room idle: nothing now-playing
+            return;
+        }
+        if (!mLowerThirdGuard.isNewSong(songId)) {
+            return; // the same song's repeated state messages never re-show the cards
+        }
+        List<JukeboxLowerThirdPlan.Card> cards = JukeboxLowerThirdPlan.plan(songId,
+                room.getNowPlayingDedicationTo(), room.getNowPlayingDedicationMessage(),
+                room.getNowPlayingNote());
+        if (cards.isEmpty()) {
+            JukeboxLowerThird.dismiss(activity);
+            return;
+        }
+        JukeboxLowerThird.show(activity, cards);
+    }
+
+    private void dismissLowerThird() {
+        Activity activity = getActivity();
+        if (activity != null) {
+            JukeboxLowerThird.dismiss(activity);
         }
     }
 }

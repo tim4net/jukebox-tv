@@ -45,6 +45,11 @@ public final class JukeboxProtocol {
     /** How long a pop-up bubble stays on screen: position window [atSec, atSec + 6s). */
     public static final long POPUP_WINDOW_MS = 6_000L;
 
+    /** Defensive caps for the optional lower-third fields of a "state" nowPlaying object. */
+    public static final int MAX_DEDICATION_TO_CHARS = 30;
+    public static final int MAX_DEDICATION_MESSAGE_CHARS = 100;
+    public static final int MAX_NOTE_CHARS = 140;
+
     private static final String VIDEO_ID_PATTERN = "^[A-Za-z0-9_-]{11}$";
 
     private JukeboxProtocol() {
@@ -151,6 +156,9 @@ public final class JukeboxProtocol {
             String nowPlayingTitle = null;
             String nowPlayingSongId = null;
             String nowPlayingVideoId = null;
+            String dedicationTo = null;
+            String dedicationMessage = null;
+            String note = null;
             // Explicit null means the room is idle. An absent field is not that signal.
             boolean nowPlayingNull = json.has("nowPlaying") && json.isNull("nowPlaying");
             JSONObject nowPlaying = json.optJSONObject("nowPlaying");
@@ -158,6 +166,14 @@ public final class JukeboxProtocol {
                 nowPlayingTitle = stringify(nowPlaying, "title");
                 nowPlayingSongId = stringify(nowPlaying, "songId");
                 nowPlayingVideoId = stringify(nowPlaying, "videoId");
+                JSONObject dedication = nowPlaying.optJSONObject("dedication");
+                if (dedication != null) {
+                    dedicationTo = cappedString(dedication, "to", MAX_DEDICATION_TO_CHARS);
+                    // A blank/absent/non-string "to" means no dedication at all.
+                    dedicationMessage = dedicationTo != null
+                            ? cappedString(dedication, "message", MAX_DEDICATION_MESSAGE_CHARS) : null;
+                }
+                note = cappedString(nowPlaying, "note", MAX_NOTE_CHARS);
             }
             String errorCode = stringify(json, "code");
             boolean popupsEnabled = Boolean.TRUE.equals(json.opt("popups"));
@@ -166,7 +182,8 @@ public final class JukeboxProtocol {
                 popupsEnabled = Boolean.TRUE.equals(settings.opt("popups"));
             }
             return new Message(type, songId, videoId, title, durationMs, listeners,
-                    nowPlayingTitle, nowPlayingSongId, nowPlayingVideoId, nowPlayingNull,
+                    nowPlayingTitle, nowPlayingSongId, nowPlayingVideoId,
+                    dedicationTo, dedicationMessage, note, nowPlayingNull,
                     errorCode, popupsEnabled);
         } catch (JSONException e) {
             return unknown();
@@ -325,8 +342,22 @@ public final class JukeboxProtocol {
         return value == null || value == JSONObject.NULL ? null : String.valueOf(value);
     }
 
+    /** Trimmed string value of key, or null when absent, non-string or blank; capped to maxChars. */
+    private static String cappedString(JSONObject json, String key, int maxChars) {
+        Object value = json.opt(key);
+        if (!(value instanceof String)) {
+            return null;
+        }
+        String text = ((String) value).trim();
+        if (text.isEmpty()) {
+            return null;
+        }
+        return text.length() <= maxChars ? text : text.substring(0, maxChars);
+    }
+
     private static Message unknown() {
-        return new Message(TYPE_UNKNOWN, null, null, null, null, -1, null, null, null, false, null, false);
+        return new Message(TYPE_UNKNOWN, null, null, null, null, -1, null, null, null,
+                null, null, null, false, null, false);
     }
 
     /**
@@ -360,13 +391,17 @@ public final class JukeboxProtocol {
         private final String mNowPlayingTitle;
         private final String mNowPlayingSongId;
         private final String mNowPlayingVideoId;
+        private final String mNowPlayingDedicationTo;
+        private final String mNowPlayingDedicationMessage;
+        private final String mNowPlayingNote;
         private final boolean mNowPlayingNull;
         private final String mErrorCode;
         private final boolean mPopupsEnabled;
 
         private Message(String type, String songId, String videoId, String title, Long durationMs,
                         int listeners, String nowPlayingTitle, String nowPlayingSongId,
-                        String nowPlayingVideoId, boolean nowPlayingNull, String errorCode,
+                        String nowPlayingVideoId, String dedicationTo, String dedicationMessage,
+                        String note, boolean nowPlayingNull, String errorCode,
                         boolean popupsEnabled) {
             mType = type;
             mSongId = songId;
@@ -377,6 +412,9 @@ public final class JukeboxProtocol {
             mNowPlayingTitle = nowPlayingTitle;
             mNowPlayingSongId = nowPlayingSongId;
             mNowPlayingVideoId = nowPlayingVideoId;
+            mNowPlayingDedicationTo = dedicationTo;
+            mNowPlayingDedicationMessage = dedicationMessage;
+            mNowPlayingNote = note;
             mNowPlayingNull = nowPlayingNull;
             mErrorCode = errorCode;
             mPopupsEnabled = popupsEnabled;
@@ -420,6 +458,21 @@ public final class JukeboxProtocol {
         /** Video id inside a "state" message's nowPlaying object, null when absent. */
         public String getNowPlayingVideoId() {
             return mNowPlayingVideoId;
+        }
+
+        /** nowPlaying dedication "to" (trimmed, capped at 30 chars), null when absent/blank. */
+        public String getNowPlayingDedicationTo() {
+            return mNowPlayingDedicationTo;
+        }
+
+        /** nowPlaying dedication "message" (trimmed, capped at 100 chars), null when absent/blank. */
+        public String getNowPlayingDedicationMessage() {
+            return mNowPlayingDedicationMessage;
+        }
+
+        /** nowPlaying trivia "note" (trimmed, capped at 140 chars), null when absent/blank. */
+        public String getNowPlayingNote() {
+            return mNowPlayingNote;
         }
 
         /** True when a state message has {@code "nowPlaying": null} (room idle, no song). */
