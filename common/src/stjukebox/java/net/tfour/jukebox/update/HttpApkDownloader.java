@@ -64,7 +64,7 @@ class HttpApkDownloader implements JukeboxUpdatePresenter.ApkDownloader {
 
     private static void ensureParentDir(File destFile) throws IOException {
         File dir = destFile.getParentFile();
-        if (dir != null && !dir.exists() && !dir.mkdirs()) {
+        if (!dir.exists() && !dir.mkdirs()) {
             throw new IOException("cannot create " + dir);
         }
     }

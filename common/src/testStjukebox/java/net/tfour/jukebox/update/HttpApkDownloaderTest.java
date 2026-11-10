@@ -137,6 +137,37 @@ public class HttpApkDownloaderTest {
                 + "\r\n\r\n" + new String(body, StandardCharsets.ISO_8859_1);
     }
 
+    /** A header-less (Connection: close) body of {@code bodyBytes} over a
+     * {@code cap}-byte downloader must abort mid-stream and leave no files. */
+    private void assertHeaderlessBodyAborts(String path, long cap, int bodyBytes)
+            throws Exception {
+        downloader = new HttpApkDownloader(cap);
+        String body = new String(new byte[bodyBytes], StandardCharsets.ISO_8859_1);
+        server.route(path, "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + body);
+        dest.getParentFile().mkdirs();
+
+        try {
+            downloader.download(url(path), dest, NO_PROGRESS);
+            fail("a header-less body over the cap must abort mid-stream");
+        } catch (IOException expected) {
+        }
+        assertFalse("the .part file must be deleted when the cap aborts", part.exists());
+        assertFalse(dest.exists());
+    }
+
+    /** The download of {@code path} must throw and leave neither a {@code .part}
+     * nor a renamed dest behind. */
+    private void assertDownloadFailsAndLeavesNoPart(String path, String failMessage,
+            String partMessage) throws Exception {
+        try {
+            downloader.download(url(path), dest, NO_PROGRESS);
+            fail(failMessage);
+        } catch (IOException expected) {
+        }
+        assertFalse(partMessage, part.exists());
+        assertFalse(dest.exists());
+    }
+
     @Test
     public void http200DownloadsAllBytesAndLeavesNoPart() throws Exception {
         server.route("/ok", "HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\nfake apk payload");
@@ -173,13 +204,9 @@ public class HttpApkDownloaderTest {
         server.route("/nocontent", "HTTP/1.1 204 No Content\r\n\r\n");
         dest.getParentFile().mkdirs();
 
-        try {
-            downloader.download(url("/nocontent"), dest, NO_PROGRESS);
-            fail("a 204 response must fail the download (only HTTP 200 is accepted)");
-        } catch (IOException expected) {
-        }
-        assertFalse("the .part file must be deleted on a failed download", part.exists());
-        assertFalse("nothing may be renamed into place on a failed download", dest.exists());
+        assertDownloadFailsAndLeavesNoPart("/nocontent",
+                "a 204 response must fail the download (only HTTP 200 is accepted)",
+                "the .part file must be deleted on a failed download");
     }
 
     @Test
@@ -190,13 +217,9 @@ public class HttpApkDownloaderTest {
         server.route("/final", "HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\nlanded elsewhere");
         dest.getParentFile().mkdirs();
 
-        try {
-            downloader.download(url("/moved"), dest, NO_PROGRESS);
-            fail("a 3xx redirect must fail the download (redirects are never followed)");
-        } catch (IOException expected) {
-        }
-        assertFalse("the .part file must be deleted on a refused redirect", part.exists());
-        assertFalse(dest.exists());
+        assertDownloadFailsAndLeavesNoPart("/moved",
+                "a 3xx redirect must fail the download (redirects are never followed)",
+                "the .part file must be deleted on a refused redirect");
     }
 
     @Test
@@ -220,19 +243,7 @@ public class HttpApkDownloaderTest {
         // Cap lowered to 1KB via the seam: a 4KB body with NO Content-Length
         // (Connection: close instead) must abort mid-stream — only the
         // streamed-count check can catch it.
-        downloader = new HttpApkDownloader(1024);
-        byte[] body = new byte[4096];
-        server.route("/big", "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"
-                + new String(body, StandardCharsets.ISO_8859_1));
-        dest.getParentFile().mkdirs();
-
-        try {
-            downloader.download(url("/big"), dest, NO_PROGRESS);
-            fail("streaming more than the cap must abort the download");
-        } catch (IOException expected) {
-        }
-        assertFalse("the .part file must be deleted when the cap aborts", part.exists());
-        assertFalse(dest.exists());
+        assertHeaderlessBodyAborts("/big", 1024, 4096);
     }
 
     @Test
@@ -240,19 +251,7 @@ public class HttpApkDownloaderTest {
         // A 200KB header-less body over a 100KB cap: the 64KB read buffer
         // means no single read exceeds the cap, so only the running total
         // (done += read) can trip it.
-        downloader = new HttpApkDownloader(100 * 1024);
-        byte[] body = new byte[200 * 1024];
-        server.route("/multi-chunk", "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"
-                + new String(body, StandardCharsets.ISO_8859_1));
-        dest.getParentFile().mkdirs();
-
-        try {
-            downloader.download(url("/multi-chunk"), dest, NO_PROGRESS);
-            fail("a multi-chunk body whose running total exceeds the cap must abort");
-        } catch (IOException expected) {
-        }
-        assertFalse("the .part file must be deleted when the cap aborts", part.exists());
-        assertFalse(dest.exists());
+        assertHeaderlessBodyAborts("/multi-chunk", 100 * 1024, 200 * 1024);
     }
 
     @Test
