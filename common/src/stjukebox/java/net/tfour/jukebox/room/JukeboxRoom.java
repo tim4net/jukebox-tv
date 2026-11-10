@@ -133,11 +133,24 @@ public final class JukeboxRoom {
         }
 
         @Override
-        public void onState(final String nowPlayingTitle, final int listeners) {
+        public void onState(String nowPlayingTitle, int listeners) {
+            onState(nowPlayingTitle, listeners, null, null, null, null);
+        }
+
+        @Override
+        public void onState(final String nowPlayingTitle, final int listeners, final String nowPlayingSongId,
+                            final String dedicationTo, final String dedicationMessage, final String note) {
             // A state with no current song (nowPlaying null) clears the client song first.
             syncSongFlag();
             mMainHandler.post(() -> {
                 mNowPlaying = nowPlayingTitle;
+                // Latest lower-third values of the current now-playing song; a state
+                // without a songId clears them (idle room / nothing to key cards on).
+                boolean hasSong = nowPlayingSongId != null;
+                mNowPlayingSongId = nowPlayingSongId;
+                mNowPlayingDedicationTo = hasSong ? dedicationTo : null;
+                mNowPlayingDedicationMessage = hasSong ? dedicationMessage : null;
+                mNowPlayingNote = hasSong ? note : null;
                 for (Listener listener : mListeners) {
                     listener.onStateChanged(nowPlayingTitle);
                 }
@@ -166,6 +179,10 @@ public final class JukeboxRoom {
     private volatile String mJoinUrl;
     private volatile String mStatus;
     private volatile String mNowPlaying;
+    private volatile String mNowPlayingSongId;
+    private volatile String mNowPlayingDedicationTo;
+    private volatile String mNowPlayingDedicationMessage;
+    private volatile String mNowPlayingNote;
     private volatile boolean mPopupsEnabled;
 
     public static JukeboxRoom instance(Context context) {
@@ -365,6 +382,26 @@ public final class JukeboxRoom {
 
     public String getNowPlaying() {
         return mNowPlaying;
+    }
+
+    /** Song id of the latest "state" nowPlaying object, null when absent/idle. */
+    public String getNowPlayingSongId() {
+        return mNowPlayingSongId;
+    }
+
+    /** Dedication "to" of the current now-playing song, null when it has none. */
+    public String getNowPlayingDedicationTo() {
+        return mNowPlayingDedicationTo;
+    }
+
+    /** Dedication "message" of the current now-playing song, null when absent/empty. */
+    public String getNowPlayingDedicationMessage() {
+        return mNowPlayingDedicationMessage;
+    }
+
+    /** Trivia note of the current now-playing song, null when it has none. */
+    public String getNowPlayingNote() {
+        return mNowPlayingNote;
     }
 
     /** True while the host enabled pop-ups in the latest room "state" (default off). */
