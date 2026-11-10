@@ -104,6 +104,77 @@ public class JukeboxProtocolTest {
     }
 
     @Test
+    public void parsesNowPlayingDedicationAndNote() {
+        JukeboxProtocol.Message m = JukeboxProtocol.parse(
+                "{\"t\":\"state\",\"room\":\"ABCDEF\",\"nowPlaying\":{\"songId\":\"s1\",\"videoId\":\"dQw4w9WgXcQ\",\"title\":\"T\","
+                        + "\"dedication\":{\"to\":\"Sarah\",\"message\":\"happy birthday!\"},"
+                        + "\"note\":\"Recorded in one take in 1977.\"},\"queue\":[],\"listeners\":2}");
+        assertEquals("Sarah", m.getNowPlayingDedicationTo());
+        assertEquals("happy birthday!", m.getNowPlayingDedicationMessage());
+        assertEquals("Recorded in one take in 1977.", m.getNowPlayingNote());
+    }
+
+    @Test
+    public void dedicationAndNoteAbsentBlankOrWrongTypeYieldNulls() {
+        // Absent fields.
+        JukeboxProtocol.Message absent = JukeboxProtocol.parse(
+                "{\"t\":\"state\",\"room\":\"r\",\"nowPlaying\":{\"songId\":\"s1\",\"videoId\":\"dQw4w9WgXcQ\",\"title\":\"T\"},\"queue\":[]}");
+        assertNull(absent.getNowPlayingDedicationTo());
+        assertNull(absent.getNowPlayingDedicationMessage());
+        assertNull(absent.getNowPlayingNote());
+        // Idle room (nowPlaying null).
+        JukeboxProtocol.Message idle = JukeboxProtocol.parse(
+                "{\"t\":\"state\",\"room\":\"r\",\"nowPlaying\":null,\"queue\":[]}");
+        assertNull(idle.getNowPlayingDedicationTo());
+        assertNull(idle.getNowPlayingDedicationMessage());
+        assertNull(idle.getNowPlayingNote());
+        // Wrong types: dedication not an object, to not a string, note not a string, message not a string.
+        JukeboxProtocol.Message wrong = JukeboxProtocol.parse(
+                "{\"t\":\"state\",\"nowPlaying\":{\"songId\":\"s1\",\"dedication\":\"Sarah\",\"note\":{\"a\":1}},\"queue\":[]}");
+        assertNull(wrong.getNowPlayingDedicationTo());
+        assertNull(wrong.getNowPlayingDedicationMessage());
+        assertNull(wrong.getNowPlayingNote());
+        JukeboxProtocol.Message wrongTo = JukeboxProtocol.parse(
+                "{\"t\":\"state\",\"nowPlaying\":{\"songId\":\"s1\",\"dedication\":{\"to\":42,\"message\":[\"x\"]},\"note\":true},\"queue\":[]}");
+        assertNull(wrongTo.getNowPlayingDedicationTo());
+        assertNull(wrongTo.getNowPlayingDedicationMessage());
+        assertNull(wrongTo.getNowPlayingNote());
+        // Blank values: blank to means no dedication at all (message dropped too).
+        JukeboxProtocol.Message blankTo = JukeboxProtocol.parse(
+                "{\"t\":\"state\",\"nowPlaying\":{\"songId\":\"s1\",\"dedication\":{\"to\":\"   \",\"message\":\"hi\"},\"note\":\"  \"},\"queue\":[]}");
+        assertNull(blankTo.getNowPlayingDedicationTo());
+        assertNull(blankTo.getNowPlayingDedicationMessage());
+        assertNull(blankTo.getNowPlayingNote());
+        // Blank message alone is dropped (dedication keeps a non-blank to).
+        JukeboxProtocol.Message blankMessage = JukeboxProtocol.parse(
+                "{\"t\":\"state\",\"nowPlaying\":{\"songId\":\"s1\",\"dedication\":{\"to\":\"Sarah\",\"message\":\"\"}},\"queue\":[]}");
+        assertEquals("Sarah", blankMessage.getNowPlayingDedicationTo());
+        assertNull(blankMessage.getNowPlayingDedicationMessage());
+    }
+
+    @Test
+    public void dedicationAndNoteAreTrimmedAndCapped() {
+        JukeboxProtocol.Message m = JukeboxProtocol.parse(
+                "{\"t\":\"state\",\"nowPlaying\":{\"songId\":\"s1\","
+                        + "\"dedication\":{\"to\":\"  Sarah  \",\"message\":\"  " + chars(150) + "  \"},"
+                        + "\"note\":\"" + chars(200) + "\"},\"queue\":[]}");
+        assertEquals("Sarah", m.getNowPlayingDedicationTo());
+        assertEquals(100, m.getNowPlayingDedicationMessage().length());
+        assertEquals(140, m.getNowPlayingNote().length());
+        JukeboxProtocol.Message overLongTo = JukeboxProtocol.parse(
+                "{\"t\":\"state\",\"nowPlaying\":{\"songId\":\"s1\",\"dedication\":{\"to\":\"" + chars(50) + "\"}},\"queue\":[]}");
+        assertEquals(30, overLongTo.getNowPlayingDedicationTo().length());
+    }
+
+    private static String chars(int n) {
+        StringBuilder sb = new StringBuilder(n);
+        for (int i = 0; i < n; i++) {
+            sb.append('x');
+        }
+        return sb.toString();
+    }
+
+    @Test
     public void validatesVideoIds() {
         assertTrue(JukeboxProtocol.isValidVideoId("dQw4w9WgXcQ"));
         assertTrue(JukeboxProtocol.isValidVideoId("a-b_c-d_e-f"));

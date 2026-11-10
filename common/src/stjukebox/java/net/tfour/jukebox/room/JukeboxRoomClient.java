@@ -56,6 +56,16 @@ public class JukeboxRoomClient {
         void onStatus(String status);
         void onState(String nowPlayingTitle, int listeners);
 
+        /**
+         * "state" message that additionally carries the now-playing songId and the
+         * optional lower-third fields (dedication to/message, trivia note; null when
+         * absent). Defaults to the plain title/listeners callback.
+         */
+        default void onState(String nowPlayingTitle, int listeners, String nowPlayingSongId,
+                             String dedicationTo, String dedicationMessage, String note) {
+            onState(nowPlayingTitle, listeners);
+        }
+
         /** Host popups setting carried by the latest "state" message (strict boolean, default off). */
         default void onPopups(boolean enabled) {
         }
@@ -566,7 +576,9 @@ public class JukeboxRoomClient {
             } else {
                 adoptStateSongLocked(message);
             }
-            mListener.onState(message.getNowPlayingTitle(), message.getListeners());
+            mListener.onState(message.getNowPlayingTitle(), message.getListeners(),
+                    message.getNowPlayingSongId(), message.getNowPlayingDedicationTo(),
+                    message.getNowPlayingDedicationMessage(), message.getNowPlayingNote());
             mListener.onPopups(message.isPopupsEnabled());
         } else if (JukeboxProtocol.TYPE_BRIDGE_ACK.equals(type)) {
             JukeboxLog.i(LOG_TAG, "bridge-ack");
