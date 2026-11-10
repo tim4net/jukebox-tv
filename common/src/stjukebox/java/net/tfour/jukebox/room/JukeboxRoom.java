@@ -79,9 +79,15 @@ public final class JukeboxRoom {
                 mMainHandler.post(() -> {
                     mNowPlaying = title;
                     PlaybackPresenter presenter = PlaybackPresenter.instance(mAppContext);
-                    if (!JukeboxForeground.isAppInForeground()) {
-                        JukeboxRoomController controller =
-                                presenter.getController(JukeboxRoomController.class);
+                    JukeboxRoomController controller =
+                            presenter.getController(JukeboxRoomController.class);
+                    if (controller != null && controller.isOpeningOrPlaying(videoId)) {
+                        // The after-ended resume check (issue #32) already
+                        // opened this song from its state snapshot: a later
+                        // "play" must not open it a second time.
+                        JukeboxLog.i(LOG_TAG, "play " + videoId
+                                + ": already opening or playing, not opening again");
+                    } else if (!JukeboxForeground.isAppInForeground()) {
                         if (controller != null && controller.hasLiveEngine()) {
                             // Issue #32: another app is in use, but the player's
                             // engine is still initialized (e.g. the previous room
@@ -130,8 +136,6 @@ public final class JukeboxRoom {
                             presenter.openVideo(videoId);
                         }
                         if (!JukeboxForeground.isAppInForeground()) {
-                            JukeboxRoomController controller =
-                                    presenter.getController(JukeboxRoomController.class);
                             if (controller != null) {
                                 controller.clearLoadThatNeverStarted();
                             }

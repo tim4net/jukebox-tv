@@ -776,6 +776,22 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         return player != null && player.isEngineInitialized();
     }
 
+    /**
+     * True when {@code videoId} is already loaded in a live engine, or a load
+     * of it is already in flight (e.g. the after-ended resume check just
+     * opened it). Package-visible so {@link JukeboxRoom} does not open the
+     * same song a second time when its "play" arrives after the snapshot.
+     */
+    boolean isOpeningOrPlaying(String videoId) {
+        if (videoId == null) {
+            return false;
+        }
+        if (videoId.equals(mLoadingVideoId) && isLoadInFlight()) {
+            return true;
+        }
+        return hasLiveEngine() && videoId.equals(mLoadedVideoId);
+    }
+
     /** True while the in-flight load marker is young enough to still be a real load. */
     private boolean isLoadInFlight() {
         long since = mLoadingSinceMs;
