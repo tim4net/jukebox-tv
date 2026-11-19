@@ -1,86 +1,177 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Two-column landscape join screen for 960x540dp TV with 48dp overscan-safe margins:
-     QR on the left, title/code/hint/now-playing/status/browse stacked on the right. -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- Saskia's 1920x1080 attract art restyle. A single 16:9 box (jukebox_attract_box)
+     holds BOTH the background art and the live overlay, so on 1080p, 4K or any window
+     the box letterboxes as a unit and the overlay stays locked to the painted neon
+     panel instead of drifting with window dp.
+
+     The art is the whole point: the neon jukebox arch and the "JUKEBOX TV" wordmark
+     are in the bitmap, so there is deliberately no title view. The tall panel the art
+     paints on the right (outer stroke x 0.81875..0.97552, y 0.075..0.92593 of the
+     art) hosts the live join views inside its inner box at x 0.824..0.971,
+     y 0.083..0.917, positioned with percent guidelines of the art box, never dp. -->
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#0e0f13"
-    android:orientation="horizontal"
-    android:gravity="center_vertical"
-    android:padding="48dp">
+    android:background="#000129">
 
-    <ImageView
-        android:id="@+id/jukebox_qr"
-        android:layout_width="300dp"
-        android:layout_height="300dp"
-        android:background="#ffffff"
-        android:padding="10dp"
-        android:contentDescription="@string/jukebox_qr_desc"
-        android:scaleType="fitCenter" />
-
-    <LinearLayout
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/jukebox_attract_box"
         android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:layout_marginStart="48dp"
-        android:orientation="vertical"
-        android:gravity="center_horizontal">
+        android:layout_height="0dp"
+        app:layout_constraintDimensionRatio="16:9"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
 
-        <TextView
-            android:id="@+id/jukebox_title"
+        <ImageView
+            android:id="@+id/jukebox_attract"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:src="@drawable/jukebox_attract_screen"
+            android:scaleType="fitXY"
+            android:contentDescription="@null"
+            android:importantForAccessibility="no"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <!-- Neon panel inner box on the 1920x1080 art (inside the ~6px stroke). -->
+        <androidx.constraintlayout.widget.Guideline
+            android:id="@+id/jukebox_panel_left"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="@string/app_name"
-            android:textColor="#ffffff"
-            android:textSize="40sp"
-            android:textStyle="bold" />
+            android:orientation="vertical"
+            app:layout_constraintGuide_percent="0.824" />
 
+        <androidx.constraintlayout.widget.Guideline
+            android:id="@+id/jukebox_panel_right"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            app:layout_constraintGuide_percent="0.971" />
+
+        <androidx.constraintlayout.widget.Guideline
+            android:id="@+id/jukebox_panel_top"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            app:layout_constraintGuide_percent="0.083" />
+
+        <androidx.constraintlayout.widget.Guideline
+            android:id="@+id/jukebox_panel_bottom"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            app:layout_constraintGuide_percent="0.917" />
+
+        <!-- Live join QR, inside the panel, full inner width (a fraction of the
+             art, ~130dp at 1080p xhdpi) so it scales with the art at 4K. Clickable
+             and focusable only while a room song plays (set from the activity);
+             the selector pad draws the focus ring on the dark art. -->
+        <ImageView
+            android:id="@+id/jukebox_qr"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_marginStart="6dp"
+            android:layout_marginEnd="6dp"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/jukebox_qr_pad"
+            android:padding="6dp"
+            android:contentDescription="@string/jukebox_qr_desc"
+            android:scaleType="fitCenter"
+            app:layout_constraintDimensionRatio="1:1"
+            app:layout_constraintStart_toStartOf="@id/jukebox_panel_left"
+            app:layout_constraintEnd_toEndOf="@id/jukebox_panel_right"
+            app:layout_constraintTop_toTopOf="@id/jukebox_panel_top" />
+
+        <!-- The 6-char code is never focusable (PR #13): no focusable attribute here. -->
         <TextView
             android:id="@+id/jukebox_code"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="8dp"
             android:minWidth="48dp"
             android:minHeight="48dp"
+            android:gravity="center"
             android:fontFamily="monospace"
-            android:letterSpacing="0.3"
+            android:letterSpacing="0.25"
             android:textColor="#ffffff"
-            android:textSize="64sp"
-            android:textStyle="bold" />
+            android:textSize="22sp"
+            android:textStyle="bold"
+            app:layout_constraintStart_toStartOf="@id/jukebox_panel_left"
+            app:layout_constraintEnd_toEndOf="@id/jukebox_panel_right"
+            app:layout_constraintTop_toBottomOf="@id/jukebox_qr" />
 
         <TextView
             android:id="@+id/jukebox_hint"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="8dp"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="2dp"
             android:gravity="center"
             android:textColor="#b0b0b8"
-            android:textSize="20sp" />
+            android:textSize="12sp"
+            app:layout_constraintStart_toStartOf="@id/jukebox_panel_left"
+            app:layout_constraintEnd_toEndOf="@id/jukebox_panel_right"
+            app:layout_constraintTop_toBottomOf="@id/jukebox_code" />
+
+        <!-- Now-playing/status anchor to the panel's bottom so the tall panel's
+             middle shows the art. -->
+        <TextView
+            android:id="@+id/jukebox_status"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="2dp"
+            android:layout_marginBottom="8dp"
+            android:gravity="center"
+            android:textColor="#66a577"
+            android:textSize="12sp"
+            app:layout_constraintStart_toStartOf="@id/jukebox_panel_left"
+            app:layout_constraintEnd_toEndOf="@id/jukebox_panel_right"
+            app:layout_constraintBottom_toBottomOf="@id/jukebox_panel_bottom" />
 
         <TextView
             android:id="@+id/jukebox_now_playing"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="2dp"
+            android:layout_marginBottom="8dp"
             android:gravity="center"
-            android:maxLines="1"
+            android:maxLines="2"
             android:ellipsize="end"
             android:textColor="#e0e0e6"
-            android:textSize="20sp" />
+            android:textSize="12sp"
+            app:layout_constraintStart_toStartOf="@id/jukebox_panel_left"
+            app:layout_constraintEnd_toEndOf="@id/jukebox_panel_right"
+            app:layout_constraintBottom_toTopOf="@id/jukebox_status" />
 
-        <TextView
-            android:id="@+id/jukebox_status"
+        <!-- Browse stays the layout default focus (<requestFocus />); it sits in the
+             dark band under the art's neon, locked to the art box with guidelines. -->
+        <androidx.constraintlayout.widget.Guideline
+            android:id="@+id/jukebox_browse_left"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:textColor="#66a577"
-            android:textSize="16sp" />
+            android:orientation="vertical"
+            app:layout_constraintGuide_percent="0.055" />
+
+        <androidx.constraintlayout.widget.Guideline
+            android:id="@+id/jukebox_browse_bottom"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            app:layout_constraintGuide_percent="0.95" />
 
         <Button
             android:id="@+id/jukebox_browse"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
             android:minHeight="48dp"
             android:focusable="true"
             android:focusedByDefault="true"
@@ -89,8 +180,10 @@
             android:paddingStart="32dp"
             android:paddingEnd="32dp"
             android:text="@string/jukebox_browse"
-            android:textSize="20sp">
+            android:textSize="20sp"
+            app:layout_constraintStart_toStartOf="@id/jukebox_browse_left"
+            app:layout_constraintBottom_toTopOf="@id/jukebox_browse_bottom">
             <requestFocus />
         </Button>
-    </LinearLayout>
-</LinearLayout>
+    </androidx.constraintlayout.widget.ConstraintLayout>
+</androidx.constraintlayout.widget.ConstraintLayout>
