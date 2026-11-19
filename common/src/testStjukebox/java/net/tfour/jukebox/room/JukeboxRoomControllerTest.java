@@ -225,7 +225,11 @@ public class JukeboxRoomControllerTest {
     }
 
     @Test
-    public void stateForNextSongAfterEndedWaitsForItsPlayAndOpensOnce() throws Exception {
+    public void stateForNextSongAfterEndedOpensItExactlyOnce() throws Exception {
+        // Issue #32: after a REAL room-song end, a snapshot of the NEXT song
+        // is enough to open it. The 2466 "waiting for its own play" deferral
+        // does not apply here (it still does on a fresh join — see
+        // JukeboxBackgroundAdvanceTest.livePlayerSnapshotWithoutAnEndStillWaitsForItsOwnPlay).
         JukeboxRoomController wired = presenter.getController(JukeboxRoomController.class);
         assertNotNull(wired);
         wired.onInit();
@@ -242,13 +246,13 @@ public class JukeboxRoomControllerTest {
         Shadows.shadowOf(Looper.getMainLooper()).idle();
         assertEquals("the ended song must not block the snapshot's live id", V2, room.getCurrentVideoId());
         assertTrue(room.isSongFromState());
-        assertEquals("a snapshot alone must not open the video", V1, presenter.getVideo().videoId);
-        assertTrue(opened.isEmpty());
+        assertEquals("a snapshot after a real end must open the next song", V2, presenter.getVideo().videoId);
+        assertEquals("opened exactly once from the snapshot", java.util.Arrays.asList(V2), opened);
 
-        t.msg(JukeboxRoomClientTest.play("s2", V2)); // the song's own "play" message
+        t.msg(JukeboxRoomClientTest.play("s2", V2)); // a later play of the same song
         Shadows.shadowOf(Looper.getMainLooper()).idle();
         assertEquals(V2, presenter.getVideo().videoId);
-        assertEquals(java.util.Arrays.asList(V2), opened); // opened exactly once
+        assertEquals("the later play must not open a second time", java.util.Arrays.asList(V2), opened);
     }
 
     /**

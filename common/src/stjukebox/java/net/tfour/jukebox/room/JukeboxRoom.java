@@ -76,48 +76,75 @@ public final class JukeboxRoom {
             // Play means a room song is set. Do this before openVideo so autoplay
             // suppression is already on when the player loads that song.
             JukeboxMode.setSongSet(songId != null && videoId != null);
-            mMainHandler.post(() -> {
-                mNowPlaying = title;
-                if (!JukeboxForeground.isAppInForeground()) {
-                    // Never take over the TV (issue #3): another app is in use, so
-                    // only update state (song flags above, now-playing here). The
-                    // song opens when the user returns: re-entering the join screen
-                    // or resuming the player re-runs the controller's resume check
-                    // in the foreground.
-                    JukeboxLog.i(LOG_TAG, "play " + videoId + " while backgrounded: deferred"
-                            + " (state updated, no openVideo)");
-                } else {
-                    // Open the video BEFORE notifying the listeners: onStateChanged
-                    // runs the controller's resume check, which must already see this
-                    // load in flight (onNewVideo) — or it would open the same video a
-                    // second time, cancelling this load. Issue #6 (cold start): seek
-                    // to the room's current position computed from the state snapshot
-                    // (song startedAt + server time elapsed); -1 (unknown) keeps the
-                    // plain start-at-0 open. The marker is only dropped here when that
-                    // open did not start a player (app backgrounded between the check
-                    // above and the launch). A player that has not attached yet is
-                    // still a normal pending load.
+                mMainHandler.post(() -> {
+                    mNowPlaying = title;
                     PlaybackPresenter presenter = PlaybackPresenter.instance(mAppContext);
-                    long posMs = getRoomPositionMs(videoId);
-                    if (posMs >= 0) {
-                        JukeboxLog.i(LOG_TAG, "play " + videoId + ": opening at the room position "
-                                + posMs + "ms (snapshot startedAt + server time elapsed)");
-                        presenter.openVideo(videoId, false, posMs, false);
+                    JukeboxRoomController controller =
+                            presenter.getController(JukeboxRoomController.class);
+                    if (controller != null && controller.isOpeningOrPlaying(videoId)) {
+                        // The after-ended resume check (issue #32) already
+                        // opened this song from its state snapshot: a later
+                        // "play" must not open it a second time.
+                        JukeboxLog.i(LOG_TAG, "play " + videoId
+                                + ": already opening or playing, not opening again");
+                    } else if (!JukeboxForeground.isAppInForeground()) {
+                        if (controller != null && controller.hasLiveEngine()) {
+                            // Issue #32: another app is in use, but the player's
+                            // engine is still initialized (e.g. the previous room
+                            // song just ended): load the song INTO it. openVideo
+                            // calls onNewVideo before the gated ViewManager
+                            // startView, so nothing is launched/foregrounded.
+                            // Same seek-to-room-position rule as the foreground
+                            // path (issue #6).
+                            long posMs = getRoomPositionMs(videoId);
+                            if (posMs >= 0) {
+                                JukeboxLog.i(LOG_TAG, "play " + videoId + " while backgrounded:"
+                                        + " opening into live engine at the room position " + posMs + "ms");
+                                presenter.openVideo(videoId, false, posMs, false);
+                            } else {
+                                JukeboxLog.i(LOG_TAG, "play " + videoId + " while backgrounded:"
+                                        + " opening into live engine");
+                                presenter.openVideo(videoId);
+                            }
+                        } else {
+                            // Never take over the TV (issue #3): another app is
+                            // in use and no live engine can receive the load, so
+                            // only update state (song flags above, now-playing
+                            // here). The song opens when the user returns: re-entering
+                            // the join screen or resuming the player re-runs the
+                            // controller's resume check in the foreground.
+                            JukeboxLog.i(LOG_TAG, "play " + videoId + " while backgrounded: deferred"
+                                    + " (state updated, no openVideo)");
+                        }
                     } else {
-                        presenter.openVideo(videoId);
-                    }
-                    if (!JukeboxForeground.isAppInForeground()) {
-                        JukeboxRoomController controller =
-                                presenter.getController(JukeboxRoomController.class);
-                        if (controller != null) {
-                            controller.clearLoadThatNeverStarted();
+                        // Open the video BEFORE notifying the listeners: onStateChanged
+                        // runs the controller's resume check, which must already see this
+                        // load in flight (onNewVideo) — or it would open the same video a
+                        // second time, cancelling this load. Issue #6 (cold start): seek
+                        // to the room's current position computed from the state snapshot
+                        // (song startedAt + server time elapsed); -1 (unknown) keeps the
+                        // plain start-at-0 open. The marker is only dropped here when that
+                        // open did not start a player (app backgrounded between the check
+                        // above and the launch). A player that has not attached yet is
+                        // still a normal pending load.
+                        long posMs = getRoomPositionMs(videoId);
+                        if (posMs >= 0) {
+                            JukeboxLog.i(LOG_TAG, "play " + videoId + ": opening at the room position "
+                                    + posMs + "ms (snapshot startedAt + server time elapsed)");
+                            presenter.openVideo(videoId, false, posMs, false);
+                        } else {
+                            presenter.openVideo(videoId);
+                        }
+                        if (!JukeboxForeground.isAppInForeground()) {
+                            if (controller != null) {
+                                controller.clearLoadThatNeverStarted();
+                            }
                         }
                     }
-                }
-                for (Listener listener : mListeners) {
-                    listener.onStateChanged(title);
-                }
-            });
+                    for (Listener listener : mListeners) {
+                        listener.onStateChanged(title);
+                    }
+                });
         }
 
         @Override
