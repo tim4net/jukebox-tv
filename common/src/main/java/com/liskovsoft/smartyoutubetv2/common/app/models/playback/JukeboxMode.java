@@ -13,8 +13,25 @@ import android.view.KeyEvent;
 public final class JukeboxMode {
     private static volatile boolean sSongSet;
     private static volatile boolean sRoomActive;
+    /** True once the stjukebox flavor has started (set by {@code JukeboxApp.init}). */
+    private static volatile boolean sShortsFilterEnabled;
 
     private JukeboxMode() {
+    }
+
+    /**
+     * @param enabled true while the stjukebox flavor is running. Search results,
+     * suggestions and autoplay picks then filter YouTube Shorts out and prefer
+     * full official music videos. Other flavors never set this: their behavior
+     * is unchanged.
+     */
+    public static void setShortsFilterEnabled(boolean enabled) {
+        sShortsFilterEnabled = enabled;
+    }
+
+    /** True while the stjukebox flavor runs (Shorts filtering active). */
+    public static boolean isShortsFilterEnabled() {
+        return sShortsFilterEnabled;
     }
 
     /** @param songSet true while a room song is current, false when the room is idle or stopped. */

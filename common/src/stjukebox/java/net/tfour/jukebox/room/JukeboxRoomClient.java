@@ -5,6 +5,8 @@ import android.os.SystemClock;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import net.tfour.jukebox.pick.JukeboxVideoPick;
+
 import java.io.IOException;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
@@ -682,6 +684,16 @@ public class JukeboxRoomClient {
         mSongFromState = false; // an accepted "play" always makes the song play-sourced
         mCurrentSongId = songId;
         mCurrentVideoId = message.getVideoId();
+        // Shorts filter (guest requests): a room song that is a Short is never
+        // opened. Report it ended — the server's advance primitive — so the
+        // queue moves to the next song. The ended guard sends this at most
+        // once per songId; an unknown duration fails open and the song plays.
+        if (JukeboxVideoPick.isRoomSongShort(message.getTitle(), message.getDurationMs())) {
+            JukeboxLog.i(LOG_TAG, "play " + message.getVideoId()
+                    + " is a Short: skipping, sending ended");
+            songEnded(message.getVideoId());
+            return;
+        }
         mListener.onPlay(songId, message.getVideoId(), message.getTitle());
     }
 
