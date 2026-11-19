@@ -17,7 +17,9 @@ jobs:
     env:
       # Publish = every build that can end up on devices via the updater.
       # These runs MUST be signed with the single Jukebox release key.
-      PUBLISH_RUN: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master' }}
+      # jukebox-p0-tv is the working TV branch: every merge there ships to the
+      # gazebo Fire TV, same as master and v* tags.
+      PUBLISH_RUN: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/jukebox-p0-tv' }}
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -53,9 +55,10 @@ jobs:
             echo "JUKEBOX_KEYSTORE_PROPERTIES=$RUNNER_TEMP/keystore.properties" >> "$GITHUB_ENV"
             echo "SIGNED=true" >> "$GITHUB_ENV"
           elif [ "$PUBLISH_RUN" = "true" ]; then
-            # Tags and master are published (GitHub Release + install manifest); an unsigned or
-            # differently-signed build there would brick in-app updates for users, so refuse.
-            echo "::error::Signing secrets missing on a publish run (tag/master). Refusing to build."
+            # Tags, master and jukebox-p0-tv are published (GitHub Release +
+            # install manifest); an unsigned or differently-signed build there
+            # would brick in-app updates for users, so refuse.
+            echo "::error::Signing secrets missing on a publish run (tag/master/jukebox-p0-tv). Refusing to build."
             exit 1
           else
             # Branch build without secrets: sign with the debug key so the APK is installable,
@@ -109,7 +112,7 @@ jobs:
             smarttubetv/build/outputs/apk/stjukebox/release/Jukebox_*_arm64-v8a.apk
 
       - name: Upload update manifest (artifact)
-        # latest.json only exists on publish runs (tag/master); skip on branch builds
+        # latest.json only exists on publish runs (tag/master/jukebox-p0-tv); skip on branch builds
         if: env.PUBLISH_RUN == 'true'
         uses: actions/upload-artifact@v4
         with:
@@ -126,15 +129,59 @@ jobs:
             smarttubetv/build/outputs/apk/stjukebox/release/Jukebox_*_arm64-v8a.apk
             smarttubetv/build/outputs/apk/stjukebox/release/latest.json
 
-      # - name: Upload to R2 (TODO: scoped token from Bou)
-      #   run: |
-      #     # Order matters: APKs first, latest.json LAST so clients never see a manifest
-      #     # pointing at APKs that are not uploaded yet.
-      #     # R2 bucket: jukebox-apks
-      #     # keys: apk/<versionCode>/Jukebox_<versionName>_<abi>.apk  (this is already
-      #     #  the build output name for the stjukebox flavor; no rename needed)
-      #     # manifest key: install/latest.json
-      #     echo "TODO: upload with a scoped token from Bou (aws s3 cp / wrangler r2 object put)"
+      - name: Move rolling release tag (jukebox-p0-tv)
+        # The rolling release always points at the newest merged jukebox-p0-tv
+        # build. softprops/action-gh-release updates a release for an existing
+        # tag but does not move the tag itself, so move it here first.
+        if: github.ref == 'refs/heads/jukebox-p0-tv'
+        run: |
+          git tag -f p0-tv-latest HEAD
+          git push -f origin p0-tv-latest
+
+      - name: Publish rolling GitHub Release (jukebox-p0-tv)
+        if: github.ref == 'refs/heads/jukebox-p0-tv'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: p0-tv-latest
+          target_commitish: jukebox-p0-tv
+          name: Jukebox TV — jukebox-p0-tv latest
+          body: |
+            Rolling build of the `jukebox-p0-tv` branch — updated on every merge.
+            This is the build the gazebo Fire TV picks up via the in-app updater
+            (manifest: https://jukebox.tfour.net/install/latest.json).
+            Commit: ${{ github.sha }}
+          files: |
+            smarttubetv/build/outputs/apk/stjukebox/release/Jukebox_*_armeabi-v7a.apk
+            smarttubetv/build/outputs/apk/stjukebox/release/Jukebox_*_arm64-v8a.apk
+            smarttubetv/build/outputs/apk/stjukebox/release/latest.json
+
+      - name: Check R2 credentials
+        # No R2 token yet (scoped token from Bou — see docs/UPDATES.md). Record
+        # whether the upload can run; a publish run without the token still
+        # publishes the GitHub Release + manifest above, and warns instead of
+        # failing, so merges are never blocked on the token.
+        run: |
+          if [ -n "${{ secrets.JUKEBOX_R2_ACCOUNT_ID }}" ] && [ -n "${{ secrets.JUKEBOX_R2_ACCESS_KEY_ID }}" ] && [ -n "${{ secrets.JUKEBOX_R2_SECRET_ACCESS_KEY }}" ]; then
+            echo "R2_CONFIGURED=true" >> "$GITHUB_ENV"
+          else
+            echo "R2_CONFIGURED=false" >> "$GITHUB_ENV"
+            if [ "$PUBLISH_RUN" = "true" ]; then
+              echo "::warning::R2 upload skipped: set the JUKEBOX_R2_ACCOUNT_ID, JUKEBOX_R2_ACCESS_KEY_ID and JUKEBOX_R2_SECRET_ACCESS_KEY secrets (scoped R2 token from Bou) to publish APKs to jukebox.tfour.net. The GitHub Release above still published."
+            fi
+          fi
+
+      - name: Upload to R2 (self-updater)
+        # Order matters: APKs first (each verified against the manifest),
+        # latest.json LAST — see scripts/upload-to-r2.sh and docs/UPDATES.md.
+        if: env.PUBLISH_RUN == 'true' && env.R2_CONFIGURED == 'true'
+        env:
+          JUKEBOX_R2_ACCOUNT_ID: ${{ secrets.JUKEBOX_R2_ACCOUNT_ID }}
+          JUKEBOX_R2_ACCESS_KEY_ID: ${{ secrets.JUKEBOX_R2_ACCESS_KEY_ID }}
+          JUKEBOX_R2_SECRET_ACCESS_KEY: ${{ secrets.JUKEBOX_R2_SECRET_ACCESS_KEY }}
+        run: |
+          bash scripts/upload-to-r2.sh \
+            smarttubetv/build/outputs/apk/stjukebox/release \
+            smarttubetv/build/outputs/apk/stjukebox/release/latest.json
 
   emulator-smoke:
     runs-on: ubuntu-latest

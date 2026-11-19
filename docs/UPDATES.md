@@ -84,9 +84,36 @@ Example (produced by `scripts/make-update-manifest.sh`):
 
 Clients of every kind (app updater, /install page, curl) must never see a `latest.json` whose APK
 URLs 404 or point at half-uploaded objects. So: upload **both APKs first**, verify them
-(sha256/size against the manifest), and **upload `install/latest.json` last**. The R2 upload in
-`.github/workflows/build-apks.yml` is a commented placeholder that follows this order once a
-scoped token exists.
+(sha256/size against the manifest), and **upload `install/latest.json` last**.
+`scripts/upload-to-r2.sh` (called by `.github/workflows/build-apks.yml`) does exactly this: it
+checks the local APKs against the manifest, uploads each APK, downloads it back from R2 and
+re-verifies sha256/size, and only then uploads the manifest. `bash scripts/upload-to-r2.sh
+--dry-run <apk_dir> <manifest>` prints the upload commands without needing credentials.
+
+## R2 credentials (still missing)
+
+The upload needs a **scoped R2 API token from Bou** (Object Read & Write on the `jukebox-apks`
+bucket only), stored as three repo secrets:
+
+| secret | value |
+| --- | --- |
+| `JUKEBOX_R2_ACCOUNT_ID` | Cloudflare account ID (builds the S3 endpoint `https://<account>.r2.cloudflarestorage.com`) |
+| `JUKEBOX_R2_ACCESS_KEY_ID` | the token's access key ID |
+| `JUKEBOX_R2_SECRET_ACCESS_KEY` | the token's secret access key |
+
+Until those exist, publish runs **warn and skip the R2 upload instead of failing** — the GitHub
+Release and `latest.json` artifact below still publish, so merges are never blocked on the token.
+But note the TV itself reads `latest.json` from R2 (`jukebox.tfour.net`), not from GitHub, so
+**no update reaches the Fire TV until the token lands**; the release artifact is the stopgap
+(manual upload from the release page).
+
+## GitHub Releases
+
+- `v*` tags publish a release on that tag (APKs + `latest.json` attached).
+- Every push to `jukebox-p0-tv` publishes the rolling **`p0-tv-latest`** release (same files
+  attached). The workflow force-moves the `p0-tv-latest` tag to the new merge first, then
+  updates the release — the release page always shows the newest merged TV build, and the
+  manifest's `commit` field says exactly which commit it is.
 
 ## Signing rules (critical)
 
@@ -95,9 +122,9 @@ scoped token exists.
   "update" bricks in-app updates (users would have to uninstall first and lose settings).
 - The key lives in Bitwarden, item **"Jukebox TV APK signing key (jukebox-tv)"**; the box's copy
   is `~/.config/jukebox-tv/keystore.properties` (gitignored; a symlink at the repo root exists on
-  dev boxes). CI gets it via the `JUKEBOX_KEYSTORE_*` secrets; the workflow **fails on tags and
-  master when the secrets are missing** and only produces a publishable `latest.json` on those
-  runs. Branch builds without secrets fall back to the debug key and are marked
+  dev boxes). CI gets it via the `JUKEBOX_KEYSTORE_*` secrets; the workflow **fails on tags,
+  master and jukebox-p0-tv when the secrets are missing** and only produces a publishable
+  `latest.json` on those runs. Branch builds without secrets fall back to the debug key and are marked
   `jukebox-apks-unsigned-dev` — they must never be published.
 - **`versionCode` must strictly increase** for every published manifest. The updater compares the
   installed `versionCode` to the newest entry and offers the update only when the manifest's is
