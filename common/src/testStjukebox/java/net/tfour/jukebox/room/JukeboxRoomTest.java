@@ -2,6 +2,7 @@ package net.tfour.jukebox.room;
 
 import android.app.Application;
 import android.os.HandlerThread;
+import android.os.Looper;
 
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.JukeboxMode;
 
@@ -11,14 +12,17 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
+import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
  * {@link JukeboxRoom#start()} self-healing: a live room is reused, a dead client or
@@ -164,6 +168,79 @@ public class JukeboxRoomTest {
         assertTrue(asyncRoom.isActive());
         assertTrue(JukeboxMode.isRoomActive());
         asyncRoom.stop();
+    }
+
+    @Test
+    public void joinByCodeSwitchesRoomAndCallsBack() {
+        room.start();
+        t.open();
+        http.stateResponse = "{\"room\":\"joinedroomid1234567890\",\"queue\":[]}";
+        final List<String> joined = new ArrayList<>();
+        final List<JukeboxRoomClient.JoinError> failed = new ArrayList<>();
+        room.joinByCode("taught", new JukeboxRoom.JoinCallback() {
+            @Override
+            public void onJoined() {
+                joined.add("yes");
+            }
+
+            @Override
+            public void onJoinFailed(JukeboxRoomClient.JoinError error) {
+                failed.add(error);
+            }
+        });
+        Shadows.shadowOf(Looper.getMainLooper()).idle(); // the callback posts to the main handler
+        assertEquals(Arrays.asList("yes"), joined);
+        assertTrue(failed.isEmpty());
+        assertEquals("joinedroomid1234567890", store.get("room"));
+        assertEquals("TAUGHT", store.get("code"));
+        assertEquals("room1", store.get("own_room"));
+        assertTrue(room.isJoinedRoom());
+        assertEquals("joinedroomid1234567890", room.getRoom());
+    }
+
+    @Test
+    public void joinByCodeUnknownCodeCallsBackWithNotFound() {
+        room.start();
+        t.open();
+        http.joinFails404 = true;
+        final List<JukeboxRoomClient.JoinError> failed = new ArrayList<>();
+        room.joinByCode("TAUGHT", new JukeboxRoom.JoinCallback() {
+            @Override
+            public void onJoined() {
+                fail("unknown code must fail");
+            }
+
+            @Override
+            public void onJoinFailed(JukeboxRoomClient.JoinError error) {
+                failed.add(error);
+            }
+        });
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(Arrays.asList(JukeboxRoomClient.JoinError.NOT_FOUND), failed);
+        assertEquals("room1", store.get("room"));
+        assertFalse(room.isJoinedRoom());
+    }
+
+    @Test
+    public void backToOwnRoomSwitchesBack() {
+        room.start();
+        t.open();
+        http.stateResponse = "{\"room\":\"joinedroomid1234567890\",\"queue\":[]}";
+        room.joinByCode("TAUGHT", new JukeboxRoom.JoinCallback() {
+            @Override
+            public void onJoined() {
+            }
+
+            @Override
+            public void onJoinFailed(JukeboxRoomClient.JoinError error) {
+                fail("join must succeed: " + error);
+            }
+        });
+        assertTrue(room.isJoinedRoom());
+        http.stateResponse = "{\"room\":\"room1\",\"queue\":[]}";
+        room.backToOwnRoom();
+        assertEquals("room1", store.get("room"));
+        assertFalse(room.isJoinedRoom());
     }
 
     private static void runAll(List<Runnable> queue) {

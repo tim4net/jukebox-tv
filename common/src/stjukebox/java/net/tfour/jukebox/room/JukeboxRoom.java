@@ -335,6 +335,53 @@ public final class JukeboxRoom {
         return mActive;
     }
 
+    /** Result callback for {@link #joinByCode(String, JoinCallback)} (main thread). */
+    public interface JoinCallback {
+        void onJoined();
+
+        void onJoinFailed(JukeboxRoomClient.JoinError error);
+    }
+
+    /**
+     * Joins the room a 6-char code names (issue #41), on the room thread.
+     * The callback runs on the main thread. See
+     * {@link JukeboxRoomClient#joinRoomByCode(String)}.
+     */
+    public void joinByCode(String code, JoinCallback callback) {
+        mExecutor.post(() -> {
+            JukeboxRoomClient client = mClient;
+            if (client == null) {
+                // No client yet: the join screen always starts the room before
+                // the user can tap anything, so this is a programming error —
+                // fail as a network error rather than crashing.
+                mMainHandler.post(() -> callback.onJoinFailed(JukeboxRoomClient.JoinError.NETWORK));
+                return;
+            }
+            try {
+                client.joinRoomByCode(code);
+                mMainHandler.post(callback::onJoined);
+            } catch (JukeboxRoomClient.JoinException e) {
+                mMainHandler.post(() -> callback.onJoinFailed(e.error));
+            }
+        });
+    }
+
+    /** Returns to the TV's own room after a join-by-code (issue #41), on the room thread. */
+    public void backToOwnRoom() {
+        mExecutor.post(() -> {
+            JukeboxRoomClient client = mClient;
+            if (client != null) {
+                client.backToOwnRoom();
+            }
+        });
+    }
+
+    /** True while the current room is a joined room, not the TV's own room. */
+    public boolean isJoinedRoom() {
+        JukeboxRoomClient client = mClient;
+        return client != null && client.isJoinedRoom();
+    }
+
     public void addListener(Listener listener) {
         mListeners.addIfAbsent(listener);
     }

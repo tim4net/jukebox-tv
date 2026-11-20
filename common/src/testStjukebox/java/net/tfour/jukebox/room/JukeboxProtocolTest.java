@@ -119,4 +119,33 @@ public class JukeboxProtocolTest {
         assertArrayEquals(new String[]{"abcdefghijklmnopqrstuv", "K7QPZX"}, rc);
         assertNull(JukeboxProtocol.parseRoomCreated("{\"error\":\"registry_unavailable\"}"));
     }
+
+    @Test
+    public void joinCodeNormalizesToUppercaseAndValidatesSixChars() {
+        assertEquals("TAUGHT", JukeboxProtocol.normalizeJoinCode(" taught "));
+        assertEquals("TAUGHT", JukeboxProtocol.normalizeJoinCode("taught"));
+        assertEquals("T6E6S6", JukeboxProtocol.normalizeJoinCode("t6e6s6"));
+        assertNull(JukeboxProtocol.normalizeJoinCode(null));
+        assertNull(JukeboxProtocol.normalizeJoinCode("   "));
+
+        assertTrue(JukeboxProtocol.isValidJoinCode("TAUGHT"));
+        assertTrue(JukeboxProtocol.isValidJoinCode("T6E6S6")); // legacy digit code
+        assertFalse(JukeboxProtocol.isValidJoinCode("taught")); // not normalized
+        assertFalse(JukeboxProtocol.isValidJoinCode("ABC")); // too short
+        assertFalse(JukeboxProtocol.isValidJoinCode("TAUGHT1")); // too long
+        assertFalse(JukeboxProtocol.isValidJoinCode("TAUGH0")); // 0 never valid
+        assertFalse(JukeboxProtocol.isValidJoinCode("TAUGH1")); // 1 never valid
+        assertFalse(JukeboxProtocol.isValidJoinCode("TAUGH-")); // punctuation
+        assertFalse(JukeboxProtocol.isValidJoinCode(null));
+    }
+
+    @Test
+    public void parsesJoinRoom() {
+        assertEquals("abcdefghijklmnopqrstuv",
+                JukeboxProtocol.parseJoinRoom("{\"room\":\"abcdefghijklmnopqrstuv\"}"));
+        assertNull(JukeboxProtocol.parseJoinRoom("{\"error\":\"not_found\"}"));
+        assertNull(JukeboxProtocol.parseJoinRoom("{\"room\":\"\"}"));
+        assertNull(JukeboxProtocol.parseJoinRoom("not json"));
+        assertNull(JukeboxProtocol.parseJoinRoom(null));
+    }
 }

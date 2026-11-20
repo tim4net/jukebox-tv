@@ -92,5 +92,36 @@
             android:textSize="20sp">
             <requestFocus />
         </Button>
+
+        <!-- Join existing room (issue #41): D-pad reachable like Browse, touch on a tablet. -->
+        <Button
+            android:id="@+id/jukebox_join_existing"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:minHeight="48dp"
+            android:focusable="true"
+            android:background="@drawable/jukebox_browse_button"
+            android:textColor="@color/jukebox_browse_button_text"
+            android:paddingStart="32dp"
+            android:paddingEnd="32dp"
+            android:text="@string/jukebox_join_existing"
+            android:textSize="20sp" />
+
+        <!-- Shown only while screening a joined room; returns to the TV's own room. -->
+        <Button
+            android:id="@+id/jukebox_back_to_own"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:minHeight="48dp"
+            android:focusable="true"
+            android:visibility="gone"
+            android:background="@drawable/jukebox_browse_button"
+            android:textColor="@color/jukebox_browse_button_text"
+            android:paddingStart="32dp"
+            android:paddingEnd="32dp"
+            android:text="@string/jukebox_back_to_own"
+            android:textSize="20sp" />
     </LinearLayout>
 </LinearLayout>

@@ -52,9 +52,18 @@ public class JukeboxRoomClientTest {
 
     static class FakeHttp implements JukeboxRoomClient.Http {
         final List<String> posts = new ArrayList<>();
+        final List<String> joinPosts = new ArrayList<>();
         String stateResponse; boolean stateFails; boolean stateTransient; boolean createFails;
+        String joinResponse; boolean joinFails404; boolean joinFails429; boolean joinFailsNetwork;
         int created;
         public String postJson(String url, String body) throws IOException {
+            if (url.endsWith("/api/join")) {
+                joinPosts.add(body);
+                if (joinFails404) throw new JukeboxRoomClient.HttpStatusException(404);
+                if (joinFails429) throw new JukeboxRoomClient.HttpStatusException(429);
+                if (joinFailsNetwork) throw new IOException("offline");
+                return joinResponse != null ? joinResponse : "{\"room\":\"joinedroomid1234567890\"}";
+            }
             if (createFails) {
                 throw new IOException("offline");
             }
@@ -359,6 +368,191 @@ public class JukeboxRoomClientTest {
         c.stop();
         assertTrue(sch.tasks.isEmpty());
         assertEquals("Stopped", rec.status);
+    }
+
+    // Join existing room (issue #41): POST /api/join resolves the code, the
+    // TV screens the joined room, and its own room is remembered for the way back.
+
+    @Test
+    public void joinByCodeSwitchesRoomAndRemembersOwnRoom() throws Exception {
+        c.start(); t.open();
+        assertEquals("room1", rec.room);
+        http.stateResponse = "{\"room\":\"joinedroomid1234567890\",\"queue\":[]}";
+        c.joinRoomByCode("taught"); // lowercase: normalized like the server matches it
+        assertEquals(1, http.joinPosts.size());
+        assertTrue(http.joinPosts.get(0).contains("\"TAUGHT\""));
+        assertEquals("joinedroomid1234567890", rec.room);
+        assertEquals("TAUGHT", rec.code);
+        assertEquals(ORIGIN + "/r/joinedroomid1234567890", rec.joinUrl);
+        assertEquals("wss://jukebox.example/api/r/joinedroomid1234567890/ws", t.urls.get(1));
+        assertEquals("joinedroomid1234567890", store.get("room"));
+        assertEquals("TAUGHT", store.get("code"));
+        assertEquals("room1", store.get("own_room"));
+        assertEquals("CODE1", store.get("own_code"));
+        assertTrue(c.isJoinedRoom());
+        t.open();
+        assertEquals("Connected", rec.status);
+        assertEquals(2, t.count("bridge-hello")); // the joined room got its own hello
+    }
+
+    @Test
+    public void joinByCodeUnknownCodeKeepsCurrentRoom() {
+        c.start(); t.open();
+        http.joinFails404 = true;
+        try {
+            c.joinRoomByCode("TAUGHT");
+            fail("unknown code must fail");
+        } catch (JukeboxRoomClient.JoinException e) {
+            assertEquals(JukeboxRoomClient.JoinError.NOT_FOUND, e.error);
+        }
+        assertEquals("room1", rec.room);
+        assertEquals("room1", store.get("room"));
+        assertEquals(1, t.urls.size()); // no reconnect
+        assertFalse(c.isJoinedRoom());
+    }
+
+    @Test
+    public void joinByCodeRateLimitedKeepsCurrentRoom() {
+        c.start(); t.open();
+        http.joinFails429 = true;
+        try {
+            c.joinRoomByCode("TAUGHT");
+            fail("rate-limited join must fail");
+        } catch (JukeboxRoomClient.JoinException e) {
+            assertEquals(JukeboxRoomClient.JoinError.RATE_LIMITED, e.error);
+        }
+        assertEquals("room1", rec.room);
+        assertEquals(1, t.urls.size());
+    }
+
+    @Test
+    public void joinByCodeInvalidCodeDoesNoHttp() {
+        c.start(); t.open();
+        for (String bad : new String[]{"ABC", "TAUGHT1", "TAUGH0", "", "   ", null}) {
+            try {
+                c.joinRoomByCode(bad);
+                fail("invalid code must fail: " + bad);
+            } catch (JukeboxRoomClient.JoinException e) {
+                assertEquals(JukeboxRoomClient.JoinError.INVALID_CODE, e.error);
+            }
+        }
+        assertTrue(http.joinPosts.isEmpty());
+        assertEquals("room1", rec.room);
+    }
+
+    @Test
+    public void joinByCodeNetworkFailureKeepsCurrentRoom() {
+        c.start(); t.open();
+        http.joinFailsNetwork = true;
+        try {
+            c.joinRoomByCode("TAUGHT");
+            fail("offline join must fail");
+        } catch (JukeboxRoomClient.JoinException e) {
+            assertEquals(JukeboxRoomClient.JoinError.NETWORK, e.error);
+        }
+        assertEquals("room1", rec.room);
+        assertEquals(1, t.urls.size());
+    }
+
+    @Test
+    public void joinByCodeMalformedResponseIsNetworkError() {
+        c.start(); t.open();
+        http.joinResponse = "{}";
+        try {
+            c.joinRoomByCode("TAUGHT");
+            fail("malformed join response must fail");
+        } catch (JukeboxRoomClient.JoinException e) {
+            assertEquals(JukeboxRoomClient.JoinError.NETWORK, e.error);
+        }
+        assertEquals("room1", rec.room);
+    }
+
+    @Test
+    public void backToOwnRoomReturnsToOwnRoom() throws Exception {
+        c.start(); t.open();
+        http.stateResponse = "{\"room\":\"joinedroomid1234567890\",\"queue\":[]}";
+        c.joinRoomByCode("TAUGHT");
+        assertTrue(c.isJoinedRoom());
+        http.stateResponse = "{\"room\":\"room1\",\"queue\":[]}";
+        assertTrue(c.backToOwnRoom());
+        assertEquals("room1", rec.room);
+        assertEquals("CODE1", rec.code);
+        assertEquals("room1", store.get("room"));
+        assertEquals("wss://jukebox.example/api/r/room1/ws", t.urls.get(2));
+        assertFalse(c.isJoinedRoom());
+        t.open();
+        assertEquals("Connected", rec.status);
+    }
+
+    @Test
+    public void backToOwnRoomWhenNotJoinedIsNoop() {
+        c.start(); t.open();
+        assertFalse(c.backToOwnRoom());
+        assertEquals(1, http.posts.size());
+        assertEquals(1, t.urls.size());
+    }
+
+    @Test
+    public void restartRemembersJoinedRoom() {
+        c.start(); t.open();
+        http.stateResponse = "{\"room\":\"joinedroomid1234567890\",\"queue\":[]}";
+        try {
+            c.joinRoomByCode("TAUGHT");
+        } catch (JukeboxRoomClient.JoinException e) {
+            fail("join must succeed: " + e.error);
+        }
+        // Fresh client, same store: the joined room is reused, not recreated.
+        setUp();
+        store.put("room", "joinedroomid1234567890");
+        store.put("code", "TAUGHT");
+        store.put("own_room", "room1");
+        store.put("own_code", "CODE1");
+        http.stateResponse = "{\"room\":\"joinedroomid1234567890\",\"queue\":[]}";
+        c.start();
+        assertTrue(http.posts.isEmpty()); // no new room created
+        assertEquals("joinedroomid1234567890", rec.room);
+        assertEquals("TAUGHT", rec.code);
+        assertTrue(c.isJoinedRoom());
+        assertTrue(c.backToOwnRoom()); // the way back still works after a restart
+        assertEquals("room1", rec.room);
+    }
+
+    @Test
+    public void joinKeepsOriginalOwnRoomWhenJoiningAgain() throws Exception {
+        c.start(); t.open();
+        http.stateResponse = "{\"room\":\"joinedroomid1234567890\",\"queue\":[]}";
+        c.joinRoomByCode("TAUGHT");
+        http.joinResponse = "{\"room\":\"secondroomid1234567890\"}";
+        http.stateResponse = "{\"room\":\"secondroomid1234567890\",\"queue\":[]}";
+        c.joinRoomByCode("SECOND");
+        assertEquals("secondroomid1234567890", rec.room);
+        assertEquals("room1", store.get("own_room")); // still the first room, not TAUGHT's
+        assertEquals("CODE1", store.get("own_code"));
+        assertTrue(c.isJoinedRoom());
+    }
+
+    @Test
+    public void joinedRoomClosedCreatesFreshOwnRoom() throws Exception {
+        c.start(); t.open();
+        http.stateResponse = "{\"room\":\"joinedroomid1234567890\",\"queue\":[]}";
+        c.joinRoomByCode("TAUGHT");
+        assertTrue(c.isJoinedRoom());
+        t.msg("{\"t\":\"closed\",\"room\":\"joinedroomid1234567890\"}");
+        assertNull(store.get("room")); // forgotten immediately, like an own room
+        sch.runAll(); // scheduled setup creates the replacement room
+        assertEquals(2, http.posts.size());
+        assertEquals("room2", store.get("room"));
+        assertEquals("room2", store.get("own_room")); // the fresh room is own now
+        assertEquals("CODE2", rec.code);
+        assertFalse(c.isJoinedRoom());
+    }
+
+    @Test
+    public void createRoomSavesOwnRoom() {
+        c.start();
+        assertEquals("room1", store.get("own_room"));
+        assertEquals("CODE1", store.get("own_code"));
+        assertFalse(c.isJoinedRoom());
     }
 
     @Test

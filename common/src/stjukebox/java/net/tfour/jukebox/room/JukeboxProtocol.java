@@ -281,6 +281,45 @@ public final class JukeboxProtocol {
     }
 
     /**
+     * Parses a POST /api/join response: {"room":"<22-char id>"}.
+     * Returns the room id, or null when malformed.
+     */
+    public static String parseJoinRoom(String json) {
+        if (json == null) {
+            return null;
+        }
+        try {
+            JSONObject obj = new JSONObject(json);
+            String room = stringify(obj, "room");
+            if (room == null || room.trim().isEmpty()) {
+                return null;
+            }
+            return room;
+        } catch (JSONException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Join codes are 6 chars, letters A-Z plus legacy digits 2-9 (partyq
+     * src/codes.ts CODE_RE, case-insensitive on the server). Normalizes
+     * user input the way the server matches it: trimmed and upper-cased.
+     * Returns null for a null/blank input.
+     */
+    public static String normalizeJoinCode(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String code = raw.trim().toUpperCase(java.util.Locale.ROOT);
+        return code.isEmpty() ? null : code;
+    }
+
+    /** True for a normalized 6-char join code (see {@link #normalizeJoinCode}). */
+    public static boolean isValidJoinCode(String code) {
+        return code != null && code.matches("^[A-Z2-9]{6}$");
+    }
+
+    /**
      * Parses a GET /api/r/{room}/state response. A null/unparseable body or one containing
      * a "closed" field means the room is gone.
      */
