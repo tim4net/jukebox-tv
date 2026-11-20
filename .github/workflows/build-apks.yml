@@ -181,6 +181,12 @@ jobs:
           target: google_apis
           emulator-boot-timeout: 900
           force-avd-creation: false
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          # -no-snapshot-load: always cold-boot. The AVD cache restores a Quick Boot
+          # snapshot saved on a different runner host; the run that booted from it
+          # died in the runner's own boot sequence (adb `input keyevent 82` killed
+          # with exit 137) before the smoke script ever started, while the cold-boot
+          # run passed. A cold boot costs ~20s and removes the host-tied snapshot
+          # from the boot path entirely.
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none -no-snapshot-load
           disable-animations: true
           script: bash .github/scripts/emulator-smoke.sh
