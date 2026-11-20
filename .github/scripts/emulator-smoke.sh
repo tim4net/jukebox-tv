@@ -4,6 +4,11 @@ set -euxo pipefail
 bash ./gradlew --no-daemon :smarttubetv:assembleStjukeboxDebug
 
 APK="$(ls smarttubetv/build/outputs/apk/stjukebox/debug/Jukebox_*_universal.apk)"
+# The AVD cache restores userdata, so a previous run's install of the app may
+# still be present — signed with that runner's throwaway debug keystore, which
+# differs from this run's. Uninstall first so the reinstall can't die with
+# INSTALL_FAILED_UPDATE_INCOMPATIBLE (signature mismatch).
+adb uninstall net.tfour.jukebox || true
 adb install -r "$APK"
 
 adb logcat -c || true
