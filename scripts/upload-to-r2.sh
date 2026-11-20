@@ -75,6 +75,43 @@ if ! [[ "$VERSION_CODE" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 
+# Monotonic guard: the TV's updater silently ignores a manifest whose
+# versionCode is not strictly greater than the installed one, so refuse to
+# publish over a live manifest with an equal-or-lower versionCode. The live
+# manifest may predate the `.jukebox` block, so fall back to the newest
+# version entry. A missing live manifest (404: first publish) proceeds with
+# a warning; any other fetch failure fails closed. Skipped for --dry-run
+# (no network by design).
+if [[ "$DRY_RUN" == "false" ]]; then
+    command -v curl >/dev/null 2>&1 || { echo "ERROR: missing required command: curl" >&2; exit 1; }
+    LIVE_JSON="$(mktemp)"
+    HTTP_CODE="$(curl -sS -o "$LIVE_JSON" -w '%{http_code}' --max-time 20 "$BASE_URL/latest.json")" || HTTP_CODE="000"
+    case "$HTTP_CODE" in
+        200)
+            PUBLISHED_CODE="$(jq -r '(.jukebox.versionCode // ([to_entries[] | select(.key != "package") | .value.versionCode // empty] | max)) // empty' "$LIVE_JSON")"
+            rm -f "$LIVE_JSON"
+            if ! [[ "$PUBLISHED_CODE" =~ ^[0-9]+$ ]]; then
+                echo "ERROR: published $BASE_URL/latest.json has no numeric versionCode" >&2
+                exit 1
+            fi
+            if (( VERSION_CODE <= PUBLISHED_CODE )); then
+                echo "ERROR: refusing to publish versionCode $VERSION_CODE: live manifest is already $PUBLISHED_CODE (versionCode must strictly increase)" >&2
+                exit 1
+            fi
+            echo "live manifest is versionCode $PUBLISHED_CODE; publishing $VERSION_CODE"
+            ;;
+        404)
+            rm -f "$LIVE_JSON"
+            echo "warning: no live manifest at $BASE_URL/latest.json (first publish?) — proceeding"
+            ;;
+        *)
+            rm -f "$LIVE_JSON"
+            echo "ERROR: could not fetch published manifest (HTTP $HTTP_CODE from $BASE_URL/latest.json) — refusing to publish" >&2
+            exit 1
+            ;;
+    esac
+fi
+
 # s3 cp wrapper: prints the command in dry-run, runs it for real otherwise.
 s3_cp() { # $1: source, $2: s3://bucket/key, $3: content-type
     if [[ "$DRY_RUN" == "true" ]]; then

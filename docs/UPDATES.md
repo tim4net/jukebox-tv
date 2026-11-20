@@ -42,29 +42,29 @@ Example (produced by `scripts/make-update-manifest.sh`):
 ```json
 {
   "jukebox": {
-    "versionCode": 2458,
+    "versionCode": 2501,
     "versionName": "32.68",
     "builtAt": "2026-10-22T12:00:00Z",
     "commit": "3edc9d5750f9a5ac31e5cd78ee1a1f6ffe5ba111",
     "apks": {
       "armeabi-v7a": {
-        "url": "https://jukebox.tfour.net/install/apk/2458/Jukebox_32.68_armeabi-v7a.apk",
+        "url": "https://jukebox.tfour.net/install/apk/2501/Jukebox_32.68_armeabi-v7a.apk",
         "sha256": "3db46604…",
         "size": 24794675
       },
       "arm64-v8a": {
-        "url": "https://jukebox.tfour.net/install/apk/2458/Jukebox_32.68_arm64-v8a.apk",
+        "url": "https://jukebox.tfour.net/install/apk/2501/Jukebox_32.68_arm64-v8a.apk",
         "sha256": "0f30d17f…",
         "size": 26008340
       }
     }
   },
   "package": {
-    "downloadUrlList": ["https://jukebox.tfour.net/install/apk/2458/Jukebox_32.68_armeabi-v7a.apk"],
-    "downloadUrlList_arm64-v8a": ["https://jukebox.tfour.net/install/apk/2458/Jukebox_32.68_arm64-v8a.apk"]
+    "downloadUrlList": ["https://jukebox.tfour.net/install/apk/2501/Jukebox_32.68_armeabi-v7a.apk"],
+    "downloadUrlList_arm64-v8a": ["https://jukebox.tfour.net/install/apk/2501/Jukebox_32.68_arm64-v8a.apk"]
   },
   "32.68": {
-    "versionCode": 2458,
+    "versionCode": 2501,
     "changelog": ["Jukebox 32.68"]
   }
 }
@@ -90,10 +90,10 @@ checks the local APKs against the manifest, uploads each APK, downloads it back 
 re-verifies sha256/size, and only then uploads the manifest. `bash scripts/upload-to-r2.sh
 --dry-run <apk_dir> <manifest>` prints the upload commands without needing credentials.
 
-## R2 credentials (still missing)
+## R2 credentials
 
 The upload needs a **scoped R2 API token from Bou** (Object Read & Write on the `jukebox-apks`
-bucket only), stored as three repo secrets:
+bucket only), stored as three repo secrets (landed 2026-11-19, verified via `gh secret list`):
 
 | secret | value |
 | --- | --- |
@@ -102,10 +102,11 @@ bucket only), stored as three repo secrets:
 | `JUKEBOX_R2_SECRET_ACCESS_KEY` | the token's secret access key |
 
 Until those exist, publish runs **warn and skip the R2 upload instead of failing** — the GitHub
-Release and `latest.json` artifact below still publish, so merges are never blocked on the token.
-But note the TV itself reads `latest.json` from R2 (`jukebox.tfour.net`), not from GitHub, so
-**no update reaches the Fire TV until the token lands**; the release artifact is the stopgap
-(manual upload from the release page).
+Release and `latest.json` artifact below still publish, so merges are never blocked on the token
+(that fallback also covers the secrets ever being removed). But note the TV itself reads
+`latest.json` from R2 (`jukebox.tfour.net`), not from GitHub, so
+**if the token is ever missing, no update reaches the Fire TV**; the release artifact is the
+stopgap (manual upload from the release page).
 
 ## GitHub Releases
 
@@ -128,10 +129,17 @@ But note the TV itself reads `latest.json` from R2 (`jukebox.tfour.net`), not fr
   `jukebox-apks-unsigned-dev` — they must never be published.
 - **`versionCode` must strictly increase** for every published manifest. The updater compares the
   installed `versionCode` to the newest entry and offers the update only when the manifest's is
-  higher; equal or lower is silently ignored ("Living in the future…"). The `versionCode` is
-  taken from upstream's `smarttubetv/build.gradle`, so whenever upstream bumps theirs we inherit
-  the bump — but if we ever build two releases from the same upstream code, we must bump past the
-  previously published value.
+  higher; equal or lower is silently ignored ("Living in the future…"). The base `versionCode`
+  lives in `gradle.properties` (`jukeboxVersionCode`, currently 2501) and `smarttubetv/build.gradle`
+  reads it (overridable with `-PjukeboxVersionCode=<n>`). On every `jukebox-p0-tv` publish run CI
+  publishes `max(base, live + 1)`, where *live* is the `versionCode` in the currently published
+  `install/latest.json` — so two merges from the same upstream code publish 2501 then 2502
+  automatically, with no manual bump. `scripts/upload-to-r2.sh` independently refuses to upload
+  unless the new `versionCode` is strictly greater than the live one (a missing live manifest —
+  first publish — proceeds with a warning). Tags and `master` publish the `versionCode` from the
+  tree; the same guard stops a tag from ever downgrading the live manifest. On upstream merges,
+  carry the `-PjukeboxVersionCode` form forward in `build.gradle` and raise `jukeboxVersionCode`
+  in `gradle.properties` if upstream's new `versionCode` is higher.
 
 ## What the Fire TV user sees
 

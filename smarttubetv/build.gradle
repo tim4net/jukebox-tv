@@ -77,7 +77,10 @@ android {
         applicationId "app.smarttube"
         minSdkVersion project.properties.minSdkVersion
         targetSdkVersion project.properties.targetSdkVersion
-        versionCode 2501
+        // Publish versionCode: CI passes -PjukeboxVersionCode=<n> on
+        // jukebox-p0-tv publish runs so every rolling publish strictly
+        // increases (default: gradle.properties jukeboxVersionCode).
+        versionCode (project.findProperty('jukeboxVersionCode') ?: 2501) as int
         versionName "32.68"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField "long", "TIMESTAMP", System.currentTimeMillis() + "L"
@@ -204,8 +207,9 @@ android {
             applicationId "net.tfour.jukebox"
             targetSdkVersion project.properties.compileSdkVersion
             // Jukebox builds on top of the shared versionCode; keep the other
-            // flavors at defaultConfig's version.
-            versionCode 2501
+            // flavors at defaultConfig's version. Same -PjukeboxVersionCode
+            // override as defaultConfig (see gradle.properties).
+            versionCode (project.findProperty('jukeboxVersionCode') ?: 2501) as int
             // Submodule deps (youtubeapi) have no stjukebox flavor; fall back to ststable
             matchingFallbacks = ['ststable']
         }
