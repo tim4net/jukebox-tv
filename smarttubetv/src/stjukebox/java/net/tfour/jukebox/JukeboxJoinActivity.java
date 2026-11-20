@@ -1,15 +1,19 @@
 package net.tfour.jukebox;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.text.InputFilter;
+import android.text.InputType;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.TextView;
 
@@ -24,6 +28,7 @@ import com.liskovsoft.smartyoutubetv2.tv.ui.playback.PlaybackActivity;
 import net.tfour.jukebox.room.JukeboxLog;
 import net.tfour.jukebox.room.JukeboxQr;
 import net.tfour.jukebox.room.JukeboxRoom;
+import net.tfour.jukebox.room.JukeboxRoomClient;
 import net.tfour.jukebox.room.JukeboxRoomController;
 
 /**
@@ -47,6 +52,9 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
     private static final long[] RESUME_RETRY_DELAYS_MS = {0, 1500, 3000, 5000, 8000, 12000};
 
     private ImageView mQrView;
+    /** "Join existing room" (issue #41); "Back to my room" shows only while joined. */
+    private Button mJoinExistingButton;
+    private Button mBackToOwnButton;
     /** The layout's own default-focus view; handed focus back when the room goes idle. */
     private Button mBrowseView;
     /**
@@ -118,6 +126,19 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
             Intent browse = new Intent(this, BrowseActivity.class);
             browse.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(browse);
+        });
+
+        // Join existing room (issue #41): a plain Button like Browse, so it is
+        // D-pad reachable on the TV and touchable on a tablet. The code entry
+        // is a dialog with a capped 6-char text field (the system keyboard
+        // comes up on both form factors).
+        mJoinExistingButton = findViewById(R.id.jukebox_join_existing);
+        mJoinExistingButton.setOnClickListener(v -> showJoinCodeDialog());
+        mBackToOwnButton = findViewById(R.id.jukebox_back_to_own);
+        mBackToOwnButton.setOnClickListener(v -> {
+            JukeboxLog.i("JukeboxJoin", "back to my room: leaving the joined room");
+            mStatusView.setText(R.string.jukebox_joining);
+            JukeboxRoom.instance(this).backToOwnRoom();
         });
 
         // The room is started in onStart(): onCreate is always followed by onStart,
@@ -337,7 +358,66 @@ public class JukeboxJoinActivity extends Activity implements JukeboxRoom.Listene
         mStatusView.setText(status != null ? status : "");
         mNowPlayingView.setText(nowPlaying != null && !nowPlaying.isEmpty()
                 ? getString(R.string.jukebox_now_playing, nowPlaying) : "");
+        // "Back to my room" only exists while screening a joined room.
+        mBackToOwnButton.setVisibility(
+                JukeboxRoom.instance(this).isJoinedRoom() ? View.VISIBLE : View.GONE);
         applyJoinFocus();
+    }
+
+    /**
+     * Asks for a 6-char room code and joins that room (issue #41). The join
+     * runs on the room thread; success rebinds the screen to the joined
+     * room's code/QR (onRoomUpdated), failure leaves the room alone and
+     * names the problem in the status line.
+     */
+    private void showJoinCodeDialog() {
+        EditText input = new EditText(this);
+        input.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(6)});
+        input.setHint(R.string.jukebox_join_code_hint);
+        input.setSingleLine(true);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.jukebox_join_code_title)
+                .setView(input)
+                .setPositiveButton(R.string.jukebox_join, (dialog, which) ->
+                        joinRoomByCode(input.getText().toString()))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+        input.requestFocus();
+    }
+
+    private void joinRoomByCode(String code) {
+        mStatusView.setText(R.string.jukebox_joining);
+        JukeboxRoom.instance(this).joinByCode(code, new JukeboxRoom.JoinCallback() {
+            @Override
+            public void onJoined() {
+                // The room rebind (onRoomUpdated) and the status callbacks own
+                // the UI from here: the new code/QR and "Connected" replace
+                // the transient "Joining…" without this method touching them.
+            }
+
+            @Override
+            public void onJoinFailed(JukeboxRoomClient.JoinError error) {
+                mStatusView.setText(joinErrorMessage(error));
+            }
+        });
+    }
+
+    /** Status string for a join failure. Pure, so tests can call it directly. */
+    static int joinErrorMessage(JukeboxRoomClient.JoinError error) {
+        switch (error) {
+            case NOT_FOUND:
+                return R.string.jukebox_join_not_found;
+            case RATE_LIMITED:
+                return R.string.jukebox_join_too_many;
+            case INVALID_CODE:
+                return R.string.jukebox_join_invalid;
+            case NETWORK:
+            default:
+                return R.string.jukebox_join_offline;
+        }
     }
 
     /** Active room with a current video. Shared by resume focus and {@link #applyJoinFocus()}. */

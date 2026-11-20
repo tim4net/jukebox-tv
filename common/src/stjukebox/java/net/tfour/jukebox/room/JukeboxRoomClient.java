@@ -71,8 +71,38 @@ public class JukeboxRoomClient {
         }
     }
 
+    /** Outcome of a join-by-code attempt that is not a plain network failure. */
+    public enum JoinError {
+        /** The entered text is not a 6-char join code (checked before any HTTP). */
+        INVALID_CODE,
+        /** The server has no room for this code (HTTP 404). */
+        NOT_FOUND,
+        /** Too many wrong codes from this IP (HTTP 429): wait before retrying. */
+        RATE_LIMITED,
+        /** The request failed without a verdict from the server. */
+        NETWORK
+    }
+
+    /** Thrown by {@link #joinRoomByCode(String)} when the join does not happen. */
+    public static class JoinException extends IOException {
+        public final JoinError error;
+
+        public JoinException(JoinError error) {
+            super("join failed: " + error);
+            this.error = error;
+        }
+    }
+
     private static final String KEY_ROOM = "room";
     private static final String KEY_CODE = "code";
+    /**
+     * The TV's own room (the one it created), remembered across joins so
+     * "back to my room" can return to it (issue #41). Saved whenever a room
+     * is created, and on the first join-by-code when an older install has a
+     * room but no own-room keys yet. Never overwritten by a join.
+     */
+    private static final String KEY_OWN_ROOM = "own_room";
+    private static final String KEY_OWN_CODE = "own_code";
     private static final long PING_INTERVAL_MS = 25_000;
     private static final long INITIAL_BACKOFF_MS = 1_000;
     private static final long MAX_BACKOFF_MS = 30_000;
@@ -260,6 +290,117 @@ public class JukeboxRoomClient {
         mPendingEndPositionMs = -1L;
         mAwaitPlayAfterReconnect = false;
         notifyStatusLocked("Stopped");
+    }
+
+    /**
+     * Joins the room a 6-char code names (issue #41): POST /api/join resolves
+     * the code to a room id — the machine-checked API (GET /:code only
+     * redirects a browser to /r/&lt;id&gt;) — the joined room is saved like an
+     * own room, and the client reconnects to it as a screen: playback plus
+     * pop-up bubbles, driven by the same bridge token as an own room, so no
+     * server change is needed to join a room the TV did not create. The TV's
+     * previous room is remembered as its own room, so {@link #backToOwnRoom()}
+     * can return to it. A joined room is remembered across restarts exactly
+     * like an own room (setupRoom reuses the saved room while its state check
+     * succeeds). Blocking HTTP: never call on the Android main thread.
+     *
+     * @throws JoinException INVALID_CODE (not a 6-char code), NOT_FOUND (no
+     *         room for the code), RATE_LIMITED (too many wrong codes),
+     *         NETWORK (no verdict from the server).
+     */
+    public void joinRoomByCode(String rawCode) throws JoinException {
+        String code = JukeboxProtocol.normalizeJoinCode(rawCode);
+        if (code == null || !JukeboxProtocol.isValidJoinCode(code)) {
+            throw new JoinException(JoinError.INVALID_CODE);
+        }
+        String room;
+        try {
+            // Blocking HTTP: no lock held, like setupRoom().
+            String joined = mHttp.postJson(mOrigin + "/api/join",
+                    "{\"code\":\"" + code + "\"}");
+            room = JukeboxProtocol.parseJoinRoom(joined);
+            if (room == null) {
+                throw new IOException("Malformed join response");
+            }
+        } catch (HttpStatusException e) {
+            if (e.code == 404) {
+                throw new JoinException(JoinError.NOT_FOUND);
+            }
+            if (e.code == 429) {
+                throw new JoinException(JoinError.RATE_LIMITED);
+            }
+            throw new JoinException(JoinError.NETWORK);
+        } catch (IOException e) {
+            throw new JoinException(JoinError.NETWORK);
+        }
+        synchronized (this) {
+            rememberOwnRoomLocked();
+            mStore.put(KEY_ROOM, room);
+            mStore.put(KEY_CODE, code);
+        }
+        if (isRunning()) {
+            // stop() then start(): the client re-runs setupRoom, which reads
+            // the joined room from the store, checks its state, and connects
+            // the socket to it.
+            stop();
+            start();
+        }
+    }
+
+    /**
+     * Returns to the TV's own room after a join-by-code (issue #41): the saved
+     * own room becomes the current room and the client reconnects to it. A
+     * no-op returning false when no own room is saved or the TV is already on
+     * it. Blocking HTTP (the state check in setupRoom): never call on the
+     * Android main thread.
+     */
+    public boolean backToOwnRoom() {
+        synchronized (this) {
+            String ownRoom = mStore.get(KEY_OWN_ROOM);
+            String ownCode = mStore.get(KEY_OWN_CODE);
+            if (ownRoom == null || ownRoom.trim().isEmpty()) {
+                return false;
+            }
+            if (ownRoom.equals(mRoom)) {
+                return false; // already on the own room
+            }
+            mStore.put(KEY_ROOM, ownRoom);
+            mStore.put(KEY_CODE, ownCode);
+        }
+        if (isRunning()) {
+            stop();
+            start();
+        }
+        return true;
+    }
+
+    /** True while the current room is a joined room, not the TV's own room. */
+    public synchronized boolean isJoinedRoom() {
+        String ownRoom = mStore.get(KEY_OWN_ROOM);
+        return mRoom != null && ownRoom != null && !mRoom.equals(ownRoom);
+    }
+
+    /**
+     * Saves the current room as the TV's own room, unless one is already
+     * saved. Runs before a join-by-code switches rooms: an install that
+     * predates own-room keys has its (own) room in KEY_ROOM, and a TV
+     * already joined keeps its original own room instead of adopting the
+     * room it is leaving. Callers hold the instance lock.
+     */
+    private void rememberOwnRoomLocked() {
+        String ownRoom = mStore.get(KEY_OWN_ROOM);
+        if (ownRoom != null && !ownRoom.trim().isEmpty()) {
+            return;
+        }
+        String currentRoom = mRoom != null ? mRoom : mStore.get(KEY_ROOM);
+        String currentCode = mCode != null ? mCode : mStore.get(KEY_CODE);
+        if (currentRoom == null || currentRoom.trim().isEmpty()) {
+            return; // no room yet: the first create saves the own room
+        }
+        mStore.put(KEY_OWN_ROOM, currentRoom);
+        if (currentCode != null && !currentCode.trim().isEmpty()) {
+            mStore.put(KEY_OWN_CODE, currentCode);
+        }
     }
 
     /** Forgets the current song without tearing the socket down. */
@@ -451,6 +592,11 @@ public class JukeboxRoomClient {
                 code = roomAndCode[1];
                 mStore.put(KEY_ROOM, room);
                 mStore.put(KEY_CODE, code);
+                // A room this client created is its own room: remember it, so
+                // a later join-by-code can return to it (issue #41). A joined
+                // room that closed also lands here — the fresh room is own.
+                mStore.put(KEY_OWN_ROOM, room);
+                mStore.put(KEY_OWN_CODE, code);
             } catch (IOException | RuntimeException e) {
                 synchronized (this) {
                     mSetupInProgress = false;

@@ -1,20 +1,26 @@
 package net.tfour.jukebox;
 
+import android.app.AlertDialog;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.view.View;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.TextView;
 
 import com.liskovsoft.smartyoutubetv2.tv.R;
 
+import net.tfour.jukebox.room.JukeboxRoomClient;
+
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
+import org.robolectric.Shadows;
 import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
 import org.robolectric.annotation.GraphicsMode;
+import org.robolectric.shadows.ShadowAlertDialog;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -68,5 +74,43 @@ public class JukeboxJoinScreenRenderTest {
         assertEquals(256, q.getWidth());
         assertEquals(256, q.getHeight());
         assertNull(JukeboxJoinActivity.qrBitmap(null, 256));
+    }
+
+    @Test
+    public void joinButtonsPresentAndBackHiddenOnOwnRoom() throws Exception {
+        ActivityController<JukeboxJoinActivity> ac = Robolectric.buildActivity(JukeboxJoinActivity.class).setup();
+        JukeboxJoinActivity a = ac.get();
+        net.tfour.jukebox.room.JukeboxRoom.instance(a).stop(); // no background room traffic in tests
+        assertEquals(View.VISIBLE, a.findViewById(R.id.jukebox_join_existing).getVisibility());
+        assertTrue(a.findViewById(R.id.jukebox_join_existing).isFocusable());
+        // On the TV's own room there is nowhere to go back to.
+        assertEquals(View.GONE, a.findViewById(R.id.jukebox_back_to_own).getVisibility());
+        ac.pause().stop().destroy();
+    }
+
+    @Test
+    public void joinButtonOpensCodeDialog() throws Exception {
+        ActivityController<JukeboxJoinActivity> ac = Robolectric.buildActivity(JukeboxJoinActivity.class).setup();
+        JukeboxJoinActivity a = ac.get();
+        net.tfour.jukebox.room.JukeboxRoom.instance(a).stop();
+        a.findViewById(R.id.jukebox_join_existing).performClick();
+        assertEquals(1, ShadowAlertDialog.getShownDialogs().size());
+        AlertDialog dialog = (AlertDialog) ShadowAlertDialog.getShownDialogs().get(0);
+        assertEquals("Join existing room", Shadows.shadowOf(dialog).getTitle().toString());
+        assertTrue(Shadows.shadowOf(dialog).getView() instanceof EditText);
+        dialog.dismiss();
+        ac.pause().stop().destroy();
+    }
+
+    @Test
+    public void joinErrorMessages() {
+        assertEquals(R.string.jukebox_join_not_found,
+                JukeboxJoinActivity.joinErrorMessage(JukeboxRoomClient.JoinError.NOT_FOUND));
+        assertEquals(R.string.jukebox_join_too_many,
+                JukeboxJoinActivity.joinErrorMessage(JukeboxRoomClient.JoinError.RATE_LIMITED));
+        assertEquals(R.string.jukebox_join_invalid,
+                JukeboxJoinActivity.joinErrorMessage(JukeboxRoomClient.JoinError.INVALID_CODE));
+        assertEquals(R.string.jukebox_join_offline,
+                JukeboxJoinActivity.joinErrorMessage(JukeboxRoomClient.JoinError.NETWORK));
     }
 }

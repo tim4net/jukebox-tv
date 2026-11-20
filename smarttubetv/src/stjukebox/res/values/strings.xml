@@ -7,4 +7,15 @@
     <string translatable="false" name="jukebox_now_playing">Now playing: %1$s</string>
     <string translatable="false" name="jukebox_browse"><![CDATA[Browse YouTube]]></string>
     <string translatable="false" name="jukebox_qr_desc"><![CDATA[QR code to join the jukebox room]]></string>
+    <!-- Join existing room (issue #41): point this TV at a room another device created. -->
+    <string translatable="false" name="jukebox_join_existing"><![CDATA[Join existing room]]></string>
+    <string translatable="false" name="jukebox_back_to_own"><![CDATA[Back to my room]]></string>
+    <string translatable="false" name="jukebox_join_code_title"><![CDATA[Join existing room]]></string>
+    <string translatable="false" name="jukebox_join_code_hint"><![CDATA[6-letter code, e.g. TAUGHT]]></string>
+    <string translatable="false" name="jukebox_join"><![CDATA[Join]]></string>
+    <string translatable="false" name="jukebox_joining"><![CDATA[Joining…]]></string>
+    <string translatable="false" name="jukebox_join_not_found"><![CDATA[Room not found — check the code and try again]]></string>
+    <string translatable="false" name="jukebox_join_too_many"><![CDATA[Too many tries — wait a bit and try again]]></string>
+    <string translatable="false" name="jukebox_join_invalid"><![CDATA[Enter the 6-letter room code]]></string>
+    <string translatable="false" name="jukebox_join_offline"><![CDATA[Could not reach the jukebox — try again]]></string>
 </resources>
