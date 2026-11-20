@@ -32,9 +32,10 @@ public class JukeboxFlavorTest {
 
     @Test
     public void versionCodeIsTheFlavorOverride() throws Exception {
-        // Build 2477: the stjukebox flavor carries its own versionCode on top
-        // of defaultConfig's 2464, so other flavors stay unaffected.
-        assertEquals(2501, RuntimeEnvironment.getApplication().getPackageManager()
+        // The stjukebox flavor carries its own versionCode on top of
+        // defaultConfig's; both are 2504 so the CI APK installs over the
+        // gazebo TV's 2503 (and so the other flavors stay unaffected).
+        assertEquals(2504, RuntimeEnvironment.getApplication().getPackageManager()
                 .getPackageInfo(RuntimeEnvironment.getApplication().getPackageName(), 0).versionCode);
     }
 
