@@ -138,7 +138,6 @@ jobs:
 
   emulator-smoke:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
