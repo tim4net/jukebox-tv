@@ -101,7 +101,15 @@ public class JukeboxRoomClientTest {
         public void onState(String n, int l) { np = n; listeners = l; }
     }
 
+    static class FakeVolumeControl implements JukeboxRoomClient.VolumeControl {
+        final List<String> calls = new ArrayList<>();
+        public void raise() { calls.add("up"); }
+        public void lower() { calls.add("down"); }
+        public void toggleMute() { calls.add("mute"); }
+    }
+
     FakeTransport t; FakeHttp http; FakeScheduler sch; MapStore store; Rec rec; JukeboxRoomClient c;
+    FakeVolumeControl vol;
 
     static String play(String songId, String videoId) {
         return "{\"t\":\"play\",\"song\":{\"songId\":\"" + songId + "\",\"videoId\":\"" + videoId + "\",\"title\":\"T " + songId + "\",\"durationMs\":null}}";
@@ -116,7 +124,9 @@ public class JukeboxRoomClientTest {
     @Before
     public void setUp() {
         t = new FakeTransport(); http = new FakeHttp(); sch = new FakeScheduler(); store = new MapStore(); rec = new Rec();
+        vol = new FakeVolumeControl();
         c = new JukeboxRoomClient(ORIGIN, t, http, sch, store, rec, "");
+        c.setVolumeControl(vol);
     }
 
     @Test
@@ -672,5 +682,51 @@ public class JukeboxRoomClientTest {
         t.msg(play("s2", V2)); // the updated snapshot's song still opens on its own play
         assertEquals(java.util.Arrays.asList(V2), rec.plays);
         assertFalse(c.isSongFromState());
+    }
+
+    // Phone volume control (slice 2): {"t":"volume","dir":"up"|"down"|"mute"}
+    // forwarded by the server to the bridge; the TV steps the music stream.
+
+    @Test
+    public void volumeUpDownMuteStepTheVolume() {
+        c.start(); t.open();
+        t.msg(play("s1", V1));
+        t.msg("{\"t\":\"volume\",\"dir\":\"up\"}");
+        t.msg("{\"t\":\"volume\",\"dir\":\"down\"}");
+        t.msg("{\"t\":\"volume\",\"dir\":\"mute\"}");
+        assertEquals(java.util.Arrays.asList("up", "down", "mute"), vol.calls);
+        // Volume never disturbs playback: same song, no reopen.
+        assertEquals(V1, c.getCurrentVideoId());
+        assertEquals(java.util.Arrays.asList(V1), rec.plays);
+    }
+
+    @Test
+    public void volumeWorksWithNoSongPlaying() {
+        c.start(); t.open();
+        // Volume is room-level, not song-level: no play needed first.
+        t.msg("{\"t\":\"volume\",\"dir\":\"up\"}");
+        assertEquals(java.util.Arrays.asList("up"), vol.calls);
+        assertTrue(rec.plays.isEmpty());
+    }
+
+    @Test
+    public void volumeUnknownDirIsIgnored() {
+        c.start(); t.open();
+        t.msg("{\"t\":\"volume\",\"dir\":\"sideways\"}");
+        t.msg("{\"t\":\"volume\"}"); // no dir at all
+        t.msg("{\"t\":\"volume\",\"dir\":5}"); // not a string direction
+        t.msg("{\"t\":\"volume\",\"dir\":\"\"}");
+        assertTrue(vol.calls.isEmpty());
+        assertTrue(rec.plays.isEmpty());
+    }
+
+    @Test
+    public void volumeWithoutVolumeControlIsIgnored() {
+        c.start(); t.open();
+        c.setVolumeControl(null); // back to the no-op: nothing steps the volume
+        t.msg("{\"t\":\"volume\",\"dir\":\"up\"}");
+        t.msg("{\"t\":\"volume\",\"dir\":\"mute\"}");
+        assertTrue(vol.calls.isEmpty()); // no crash, no call, no state change
+        assertTrue(rec.plays.isEmpty());
     }
 }

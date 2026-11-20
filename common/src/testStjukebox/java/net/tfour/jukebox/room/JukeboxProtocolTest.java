@@ -59,6 +59,19 @@ public class JukeboxProtocolTest {
     }
 
     @Test
+    public void parsesVolumeDirections() {
+        // Wire format: partyq room.ts forwards {t:"volume", dir} to the bridge as-is.
+        assertEquals("volume", JukeboxProtocol.parse("{\"t\":\"volume\",\"dir\":\"up\"}").getType());
+        assertEquals("up", JukeboxProtocol.parse("{\"t\":\"volume\",\"dir\":\"up\"}").getVolumeDir());
+        assertEquals("down", JukeboxProtocol.parse("{\"t\":\"volume\",\"dir\":\"down\"}").getVolumeDir());
+        assertEquals("mute", JukeboxProtocol.parse("{\"t\":\"volume\",\"dir\":\"mute\"}").getVolumeDir());
+        assertNull(JukeboxProtocol.parse("{\"t\":\"volume\"}").getVolumeDir());
+        // Parsed as-is; the client ignores anything that is not up/down/mute.
+        assertEquals("sideways", JukeboxProtocol.parse("{\"t\":\"volume\",\"dir\":\"sideways\"}").getVolumeDir());
+        assertNull(JukeboxProtocol.parse("{\"t\":\"play\"}").getVolumeDir());
+    }
+
+    @Test
     public void parsesPlay() {
         JukeboxProtocol.Message m = JukeboxProtocol.parse(
                 "{\"t\":\"play\",\"song\":{\"songId\":\"s1\",\"videoId\":\"dQw4w9WgXcQ\",\"title\":\"Rick\",\"durationMs\":213000}}");
