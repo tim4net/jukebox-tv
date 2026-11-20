@@ -10,6 +10,7 @@ import com.liskovsoft.sharedutils.mylogger.Log;
 import com.liskovsoft.smartyoutubetv2.common.R;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.BasePlayerController;
+import com.liskovsoft.smartyoutubetv2.common.app.models.playback.JukeboxMode;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.listener.PlayerEventListener;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.FormatItem;
 import com.liskovsoft.smartyoutubetv2.common.misc.BufferingDetector;
@@ -33,6 +34,11 @@ public class ErrorFixerController extends BasePlayerController implements OnLong
     @Override
     public void onInit() {
         mVideoLoaderController = getController(VideoLoaderController.class);
+    }
+
+    @Override
+    public void onFormatInfoError(Video item, Throwable error) {
+        runFormatErrorAction(error);
     }
 
     @Override
@@ -396,6 +402,16 @@ public class ErrorFixerController extends BasePlayerController implements OnLong
             if (getPlayer() != null) {
                 getPlayer().setTitle(fullMsg);
             }
+        }
+
+        if (JukeboxMode.isSongSet()) {
+            // A jukebox room song is current: the room controller owns
+            // format-load recovery (fresh reopen, then skip). A same-engine
+            // reload just replays the same deterministic failure forever
+            // (gazebo 2026-11-20: "fromNullable result is null" every ~3s,
+            // silent, until Back unwedged it).
+            Log.d(TAG, "loadFormatInfo failed for the room song: leaving recovery to JukeboxRoomController");
+            return;
         }
 
         if (Utils.fixRetrofitErrors(getContext(), error)) {

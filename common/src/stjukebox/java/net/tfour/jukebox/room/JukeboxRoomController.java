@@ -26,6 +26,19 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
     private static final long HEARTBEAT_MS = 5_000;
     private static final int MAX_REOPEN_ATTEMPTS = 2;
     /**
+     * Fresh reopens allowed per room song after its format info fails to
+     * load. A fresh reopen is the programmatic equivalent of the Back key,
+     * which unwedges the TV (gazebo 2026-11-20: "loadFormatInfo error:
+     * IllegalStateException: fromNullable result is null" every ~3s,
+     * silent, until Back). Only after this many failed reopens is the song
+     * reported ended so the server advances the queue.
+     */
+    private static final int MAX_FORMAT_ERROR_REOPENS = 2;
+    /** VideoId the format-error counter below applies to. */
+    private String mFormatErrorVideoId;
+    /** Consecutive format-info load failures for {@link #mFormatErrorVideoId}. */
+    private int mFormatErrorAttempts;
+    /**
      * How long an in-flight load marker ({@link #mLoadingVideoId}) may still count
      * as "a load of the room video is on its way". The engine load of an openVideo
      * settles within seconds; a marker older than this is leftover state (e.g. the
@@ -159,6 +172,11 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         // next idle period), and a posted resume check is moot now.
         mLoadingVideoId = null;
         mLoadingSinceMs = 0L;
+        // A load that finished is a recovery: the format-error count is per
+        // failed song, not per session (it must survive engine releases, but
+        // never survive a load that worked).
+        mFormatErrorVideoId = null;
+        mFormatErrorAttempts = 0;
         handler().removeCallbacks(mResumeCheck);
         updatePopupOverlay();
         if (!JukeboxRoom.isRoomActive()) {
@@ -379,6 +397,78 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         // settled; onNewVideo/onVideoLoaded cancel it when a load makes it moot.
         handler().removeCallbacks(mResumeCheck);
         handler().post(mResumeCheck);
+    }
+
+    /**
+     * Format-info load failure (see {@code VideoLoaderController}): the song's
+     * stream URLs could not be fetched, so nothing can play. The stock
+     * recovery ({@code ErrorFixerController}) reloads the same video in the
+     * same engine, which replays the same deterministic failure forever
+     * (gazebo 2026-11-20: "fromNullable result is null" every ~3s, silent) -
+     * so while a room song is set this controller owns the failure instead:
+     * first finish the player, which is the programmatic equivalent of the
+     * Back key: the engine release reopens the room song in a brand-new
+     * activity and engine. Only after {@link #MAX_FORMAT_ERROR_REOPENS}
+     * failed reopens is the song reported ended so the server advances the
+     * queue. The counter survives engine releases (it lives on this
+     * process-lifetime controller) and resets on any successful load or when
+     * a different videoId fails. A failure for a non-room video still gets a
+     * fresh reopen (which loads the room song), but never reports the room
+     * song ended - only the room song itself can be skipped.
+     */
+    @Override
+    public void onFormatInfoError(Video item, Throwable error) {
+        if (!JukeboxRoom.isRoomActive() || !JukeboxMode.isSongSet()) {
+            return; // no room song: normal SmartTube error handling applies
+        }
+        Context ctx = getContext();
+        if (ctx == null || item == null || item.videoId == null) {
+            return;
+        }
+        JukeboxRoom room = JukeboxRoom.instance(ctx);
+        String roomVideoId = room.getCurrentVideoId();
+        if (roomVideoId == null) {
+            return; // idle room: nothing to recover
+        }
+        if (!item.videoId.equals(mFormatErrorVideoId)) {
+            mFormatErrorVideoId = item.videoId;
+            mFormatErrorAttempts = 0;
+        }
+        mFormatErrorAttempts++;
+        JukeboxLog.i(LOG_TAG, "format info failed for " + item.videoId + " (attempt "
+                + mFormatErrorAttempts + " of " + (MAX_FORMAT_ERROR_REOPENS + 1) + "): " + error);
+        if (mFormatErrorAttempts <= MAX_FORMAT_ERROR_REOPENS) {
+            // Fresh reopen first: finish the player (the Back key's recovery).
+            // The engine release posts the resume check, which reopens the
+            // room song in a brand-new activity and engine.
+            finishPlayerForReopen();
+            return;
+        }
+        // Two fresh reopens failed: the song itself will not load. Report it
+        // ended so the server advances the queue instead of leaving the TV
+        // silent forever. Guard the ended report: only the room song itself
+        // may be skipped.
+        if (item.videoId.equals(roomVideoId)) {
+            JukeboxLog.i(LOG_TAG, "format info failed after " + MAX_FORMAT_ERROR_REOPENS
+                    + " fresh reopens for room song " + roomVideoId
+                    + ": reporting ended so the room advances");
+            mEndedVideoId = item.videoId;
+            room.songEnded(item.videoId);
+        } else {
+            JukeboxLog.i(LOG_TAG, "format info failed after " + MAX_FORMAT_ERROR_REOPENS
+                    + " fresh reopens for non-room video " + item.videoId
+                    + ": not reporting the room song ended");
+        }
+        mFormatErrorVideoId = null;
+        mFormatErrorAttempts = 0;
+        finishPlayerForReopen();
+    }
+
+    /** Finishes the player so the engine release reopens the room song fresh. */
+    private void finishPlayerForReopen() {
+        if (getPlayer() != null && getPlaybackPresenter() != null) {
+            getPlaybackPresenter().forceFinish();
+        }
     }
 
     @Override
