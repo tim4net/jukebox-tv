@@ -152,12 +152,15 @@ public class JukeboxUpdateUnknownSourcesFallbackTest {
 
         @Override
         protected String manifestApkSha256(String downloadUrl) {
-            return null; // absent = skip the file hash check
+            // Issue #19 (fail closed): the hash check is not optional, so
+            // these tests supply a matching hash and let the install reach
+            // the unknown-sources fallback logic they are actually testing.
+            return "ABC";
         }
 
         @Override
         protected String sha256OfFile(java.io.File file) {
-            return null;
+            return "ABC";
         }
 
         /** Fire OS seam: unresolvable actions throw, everything else starts. */
