@@ -1,0 +1,68 @@
+#!/bin/sh
+# Merge-gate pre-push hook (Bob's spec §b): run the PIT mutation check on
+# the Jukebox classes this push changes, before the push lands.
+#
+# Install once per clone (checked-in hooks, no copy step):
+#   scripts/merge-gate/install-hooks.sh
+#
+# Skip for a docs-only push (the escape hatch — CI on the `mutate`
+# label / nightly still runs the real check):
+#   SKIP_MUTATION=1 git push
+#
+# The hook diffs HEAD against the merge-base with origin/jukebox-p0-tv.
+# It needs node, ./gradlew and the Android SDK in PATH — the same
+# environment the unit tests already need. If the mutation check cannot
+# run here (no gradle, offline), it blocks the push and says why; use the
+# escape hatch, and add the `mutate` label to the PR so CI runs it.
+
+set -e
+cd "$(git rev-parse --show-toplevel)"
+
+if [ -n "$SKIP_MUTATION" ]; then
+  echo "merge-gate pre-push: SKIP_MUTATION set, mutation check skipped."
+  exit 0
+fi
+
+BASE="$(git merge-base HEAD origin/jukebox-p0-tv 2>/dev/null || true)"
+if [ -z "$BASE" ]; then
+  echo "merge-gate pre-push: no merge-base with origin/jukebox-p0-tv (no origin?); skipping mutation check."
+  exit 0
+fi
+
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT INT TERM
+
+BASE_SHA="$BASE" OUT="$TMP" node scripts/merge-gate/pitest-targets.mjs
+
+TARGETS="$(node -e "
+  const t = require('$TMP');
+  const n = Object.values(t.modules).reduce((s, m) => s + m.targetClasses.length, 0);
+  console.log(n);
+")"
+if [ "$TARGETS" = "0" ]; then
+  echo "merge-gate pre-push: no Jukebox classes changed — nothing to mutate."
+  exit 0
+fi
+
+# Per-module target lists, from the same targets file.
+eval "$(node -e "
+  const t = require('$TMP');
+  for (const [mod, m] of Object.entries(t.modules)) {
+    const up = mod.toUpperCase();
+    console.log(up + '_CLASSES=' + JSON.stringify(m.targetClasses.join(',')));
+    console.log(up + '_TESTS=' + JSON.stringify(m.targetTests.join(',')));
+  }
+")"
+
+if [ -n "$COMMON_CLASSES" ]; then
+  ./gradlew --no-daemon :common:pitestMutate \
+    -PpitestTargetClasses="$COMMON_CLASSES" \
+    -PpitestTargetTests="$COMMON_TESTS"
+fi
+if [ -n "$SMARTTUBETV_CLASSES" ]; then
+  ./gradlew --no-daemon :smarttubetv:pitestMutate \
+    -PpitestTargetClasses="$SMARTTUBETV_CLASSES" \
+    -PpitestTargetTests="$SMARTTUBETV_TESTS"
+fi
+
+node scripts/merge-gate/pitest-check.mjs --targets "$TMP"

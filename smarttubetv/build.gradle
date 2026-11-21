@@ -23,6 +23,9 @@ buildscript {
 }
 
 apply plugin: 'com.android.application'
+// Merge gate: PIT mutation check on changed Jukebox classes (Bob's spec).
+// Registers the pitestMutate task; see gradle/pitest-jukebox.gradle.
+apply from: "$rootDir/gradle/pitest-jukebox.gradle"
 
 def keystorePropertiesFile = rootProject.file("keystore.properties")
 if (System.getenv("JUKEBOX_KEYSTORE_PROPERTIES") != null && new File(System.getenv("JUKEBOX_KEYSTORE_PROPERTIES")).exists()) {

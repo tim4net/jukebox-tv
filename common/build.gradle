@@ -1,6 +1,9 @@
 apply from: gradle.ext.sharedModulesConstants
 apply plugin: 'kotlin-android'
 apply plugin: 'com.android.library'
+// Merge gate: PIT mutation check on changed Jukebox classes (Bob's spec).
+// Registers the pitestMutate task; see gradle/pitest-jukebox.gradle.
+apply from: "$rootDir/gradle/pitest-jukebox.gradle"
 
 android {
     // FIX: Default interface methods are only supported starting with Android N (--min-api 24)
