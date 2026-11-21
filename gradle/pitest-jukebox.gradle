@@ -74,6 +74,15 @@ project.afterEvaluate {
             def reportDir = (findProperty('pitestReportDir') ?: "$buildDir/reports/pitest").toString()
             def historyFile = (findProperty('pitestHistoryFile') ?: "$buildDir/pitest-history.txt").toString()
 
+            // Targeting an outer class does NOT mutate its nested classes
+            // (PIT reports them as Outer$Inner), so expand each target to
+            // cover its nested classes too: Outer, Outer$*. A change inside
+            // a nested class (e.g. JukeboxProtocol$Bubble) is then checked
+            // against the outer class's changed lines by pitest-check.mjs.
+            def expandedClasses = targetClasses.split(',').collectMany {
+                [it.trim(), it.trim() + '$*']
+            }.join(',')
+
             // Test runtime classpath: main + test classes and every
             // dependency the stjukebox unit tests run with (JUnit 4,
             // Robolectric, mockable android-all, JSON, OkHttp, ...).
@@ -104,7 +113,7 @@ project.afterEvaluate {
             }
 
             args = [
-                '--targetClasses', targetClasses,
+                '--targetClasses', expandedClasses,
                 '--targetTests', targetTests,
                 '--sourceDirs', sourceDirs.join(','),
                 '--classPath', testCp.unique().join(','),
@@ -116,7 +125,7 @@ project.afterEvaluate {
                 '--failWhenNoMutations', 'false',
                 '--jvmArgs', jvmArgs.join(',')
             ]
-            logger.lifecycle("pitestMutate: ${project.name} targets=${targetClasses}")
+            logger.lifecycle("pitestMutate: ${project.name} targets=${expandedClasses}")
             logger.lifecycle("pitestMutate: classpath entries=${testCp.size()}, reportDir=${reportDir}")
         }
     }

@@ -5,12 +5,20 @@
 // `pitestMutate` task) plus the targets file from pitest-targets.mjs, and
 // fails the gate when:
 //   1. any surviving mutant sits on a changed line of a changed class, or
-//   2. the mutation score on changed classes is below the configured
+//   2. any mutant on a changed line has NO_COVERAGE — the changed code is
+//      not executed by any test at all (PIT never runs such mutants, so
+//      they do not "survive"; untested changed code still fails the gate), or
+//   3. the mutation score on changed classes is below the configured
 //      minimum (only used when changed-line data is unavailable).
 // Survivors on UNCHANGED lines are listed but do not fail the gate.
 // Classes with no mutants at all (e.g. no runnable test) are listed as
 // uncovered and fail the gate — a change with no mutation coverage is not
 // "covered".
+//
+// Mutated classes are matched to their outer class (PIT reports nested
+// classes as Outer$Inner; the Gradle task targets Outer$* too, so a change
+// inside a nested class is checked against the outer class's changed
+// lines).
 //
 // Usage (run from the repo root):
 //   node scripts/merge-gate/pitest-check.mjs [--targets pitest-targets.json]
@@ -69,6 +77,7 @@ let killed = 0;
 let survived = 0;
 let total = 0;
 const survivorsOnChangedLines = [];
+const noCoverageOnChangedLines = [];
 const survivorsElsewhere = [];
 const seenClasses = new Set();
 let reportsFound = 0;
@@ -83,20 +92,28 @@ for (const reportPath of REPORT_PATHS) {
   for (const m of xml.matchAll(MUT_RE)) {
     const [, status, cls, lineStr] = m;
     const line = Number(lineStr);
+    // PIT reports nested classes as Outer$Inner; match them to the outer
+    // class the targets file names.
+    const outer = cls.split("$")[0];
     total++;
-    seenClasses.add(cls);
+    seenClasses.add(outer);
+    const onChangedLine = targetClasses.has(outer) && inChangedLines(outer, line);
     if (status === "SURVIVED") {
       survived++;
       const entry = { class: cls, line };
-      if (targetClasses.has(cls) && inChangedLines(cls, line)) {
+      if (onChangedLine) {
         survivorsOnChangedLines.push(entry);
       } else {
         survivorsElsewhere.push(entry);
       }
     } else if (status === "KILLED") {
       killed++;
+    } else if (status === "NO_COVERAGE" && onChangedLine) {
+      // Untested changed code: PIT never runs these mutants, so they do
+      // not show up as survivors — fail closed instead.
+      noCoverageOnChangedLines.push({ class: cls, line });
     }
-    // NO_COVERAGE / TIMED_OUT / MEMORY_ERROR / RUN_ERROR count as
+    // TIMED_OUT / MEMORY_ERROR / RUN_ERROR / NON_VIABLE count as
     // neither killed nor survived in the score; they are listed below.
   }
 }
@@ -110,6 +127,12 @@ console.log(`pitest-check: ${reportsFound} report(s), ${total} mutant(s), ` +
 if (survivorsOnChangedLines.length > 0) {
   console.log("SURVIVORS ON CHANGED LINES (fail):");
   for (const s of survivorsOnChangedLines) {
+    console.log(`  - ${s.class}:${s.line}`);
+  }
+}
+if (noCoverageOnChangedLines.length > 0) {
+  console.log("NO-COVERAGE MUTANTS ON CHANGED LINES (fail — changed code no test executes):");
+  for (const s of noCoverageOnChangedLines) {
     console.log(`  - ${s.class}:${s.line}`);
   }
 }
@@ -129,6 +152,12 @@ let failed = false;
 if (survivorsOnChangedLines.length > 0) {
   console.error(
     `pitest-check: FAIL — ${survivorsOnChangedLines.length} surviving mutant(s) on changed lines.`,
+  );
+  failed = true;
+}
+if (noCoverageOnChangedLines.length > 0) {
+  console.error(
+    `pitest-check: FAIL — ${noCoverageOnChangedLines.length} mutant(s) on changed lines have no coverage (changed code no test executes).`,
   );
   failed = true;
 }
