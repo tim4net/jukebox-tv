@@ -55,12 +55,12 @@ eval "$(node -e "
 ")"
 
 if [ -n "$COMMON_CLASSES" ]; then
-  ./gradlew --no-daemon :common:pitestMutate \
+  bash ./gradlew --no-daemon :common:pitestMutate \
     -PpitestTargetClasses="$COMMON_CLASSES" \
     -PpitestTargetTests="$COMMON_TESTS"
 fi
 if [ -n "$SMARTTUBETV_CLASSES" ]; then
-  ./gradlew --no-daemon :smarttubetv:pitestMutate \
+  bash ./gradlew --no-daemon :smarttubetv:pitestMutate \
     -PpitestTargetClasses="$SMARTTUBETV_CLASSES" \
     -PpitestTargetTests="$SMARTTUBETV_TESTS"
 fi
