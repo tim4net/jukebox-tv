@@ -24,10 +24,13 @@
 import { existsSync, readFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
-const targetsFlag = args.find((a) => a.startsWith("--targets="));
-const TARGETS_PATH = targetsFlag
-  ? targetsFlag.slice("--targets=".length)
-  : "pitest-targets.json";
+const targetsEq = args.find((a) => a.startsWith("--targets="));
+const targetsIdx = args.indexOf("--targets");
+const TARGETS_PATH = targetsEq
+  ? targetsEq.slice("--targets=".length)
+  : targetsIdx >= 0 && args[targetsIdx + 1]
+    ? args[targetsIdx + 1]
+    : "pitest-targets.json";
 const CONFIG_PATH = process.env.CONFIG || ".github/merge-gate.config.json";
 const REPORT_PATHS = (process.env.REPORTS ||
   "common/build/reports/pitest/mutations.xml,smarttubetv/build/reports/pitest/mutations.xml")
@@ -55,12 +58,12 @@ function inChangedLines(fqcn, line) {
   return false;
 }
 
-// Minimal XML scan for <mutation ...><mutatedClass>..</mutatedClass>
-// <lineNumber>..</lineNumber><status>SURVIVED|KILLED|...</status></mutation>.
-// PIT's mutations.xml is flat; a regex scan is enough and keeps this
-// dependency-free.
+// Minimal XML scan for PIT's <mutation detected=.. status=..> element
+// (status is an ATTRIBUTE on <mutation>; mutatedClass and lineNumber are
+// child elements). PIT's mutations.xml is flat; a regex scan is enough and
+// keeps this dependency-free.
 const MUT_RE =
-  /<mutation[^>]*>[\s\S]*?<mutatedClass>([^<]+)<\/mutatedClass>[\s\S]*?<lineNumber>(\d+)<\/lineNumber>[\s\S]*?<status>([^<]+)<\/status>[\s\S]*?<\/mutation>/g;
+  /<mutation[^>]*\bstatus=["']([^"']+)["'][^>]*>[\s\S]*?<mutatedClass>([^<]+)<\/mutatedClass>[\s\S]*?<lineNumber>(\d+)<\/lineNumber>[\s\S]*?<\/mutation>/g;
 
 let killed = 0;
 let survived = 0;
@@ -78,7 +81,7 @@ for (const reportPath of REPORT_PATHS) {
   reportsFound++;
   const xml = readFileSync(reportPath, "utf8");
   for (const m of xml.matchAll(MUT_RE)) {
-    const [, cls, lineStr, status] = m;
+    const [, status, cls, lineStr] = m;
     const line = Number(lineStr);
     total++;
     seenClasses.add(cls);
