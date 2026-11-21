@@ -1,4 +1,4 @@
-// Pure helpers for the merge gate (revert check + risky paths).
+// Pure helpers for the merge gate (risky paths + name-status parsing).
 //
 // Vendored from tim4net/partyq (scripts/merge-gate/lib.mjs), trimmed to
 // what this repo uses: glob matching for the risky-paths job and
