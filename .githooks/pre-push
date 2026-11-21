@@ -14,6 +14,9 @@
 # environment the unit tests already need. If the mutation check cannot
 # run here (no gradle, offline), it blocks the push and says why; use the
 # escape hatch, and add the `mutate` label to the PR so CI runs it.
+#
+# Extra Gradle arguments (e.g. an init script for an offline sandbox):
+#   MERGE_GATE_GRADLE_ARGS="-I /path/to/local-repo.init.gradle --offline"
 
 set -e
 cd "$(git rev-parse --show-toplevel)"
@@ -55,12 +58,15 @@ eval "$(node -e "
 ")"
 
 if [ -n "$COMMON_CLASSES" ]; then
-  bash ./gradlew --no-daemon :common:pitestMutate \
+  # shellcheck disable=SC2086 — MERGE_GATE_GRADLE_ARGS is intentionally
+  # word-split (extra Gradle arguments, e.g. an init script for offline).
+  bash ./gradlew --no-daemon $MERGE_GATE_GRADLE_ARGS :common:pitestMutate \
     -PpitestTargetClasses="$COMMON_CLASSES" \
     -PpitestTargetTests="$COMMON_TESTS"
 fi
 if [ -n "$SMARTTUBETV_CLASSES" ]; then
-  bash ./gradlew --no-daemon :smarttubetv:pitestMutate \
+  # shellcheck disable=SC2086 — see above.
+  bash ./gradlew --no-daemon $MERGE_GATE_GRADLE_ARGS :smarttubetv:pitestMutate \
     -PpitestTargetClasses="$SMARTTUBETV_CLASSES" \
     -PpitestTargetTests="$SMARTTUBETV_TESTS"
 fi

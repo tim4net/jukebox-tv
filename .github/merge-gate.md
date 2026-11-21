@@ -60,6 +60,13 @@ Every push then runs the mutation check on the Jukebox classes it changes
 a docs-only push with `SKIP_MUTATION=1 git push` — CI on the `mutate`
 label / nightly still runs the real check.
 
+In an offline sandbox, pass extra Gradle arguments (e.g. a local-repo
+init script) with `MERGE_GATE_GRADLE_ARGS`:
+
+```
+MERGE_GATE_GRADLE_ARGS="-I /path/to/local-repo.init.gradle --offline" git push
+```
+
 Run the pieces by hand:
 
 ```
