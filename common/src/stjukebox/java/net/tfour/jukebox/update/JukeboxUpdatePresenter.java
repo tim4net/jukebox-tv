@@ -646,8 +646,10 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         if (wrongSigner != null) {
             return wrongSigner;
         }
-        // Build 2475, item 2: the manifest's optional sha256 for the apk
-        // (absent = skip the file hash check; the cert pin above still applies).
+        // Build 2475, item 2; issue #19 (fail closed): the manifest's sha256
+        // for the apk is REQUIRED, not optional — a manifest that carries no
+        // hash for the offered download refuses the install (the cert pin
+        // above still applies, but it is not a substitute for the hash).
         String wrongHash = manifestSha256FailureReason(
                 manifestApkSha256(offer != null ? offer.url : null), sha256OfFile(file));
         if (wrongHash != null) {
@@ -680,13 +682,16 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
     }
 
     /**
-     * Pure item-2 decision: null when the manifest carries no sha256 for the
-     * apk (absent = skip) or the file hashes exactly as it says, else the
-     * logged reason it must be deleted and never launched.
+     * Pure item-2 decision (issue #19, fail closed): null only when the file
+     * hashes exactly as the manifest says, else the logged reason it must be
+     * deleted and never launched. A manifest that carries no sha256 for the
+     * apk (absent or blank) is itself a refusal — the hash check is not
+     * optional, and the signer pin is not a substitute for it.
      */
     static String manifestSha256FailureReason(String manifestSha256, String fileSha256) {
         if (manifestSha256 == null || manifestSha256.trim().isEmpty()) {
-            return null; // absent = skip the file hash check
+            return "sha256 missing: the manifest carries no apk sha256 for this"
+                    + " download \u2014 refusing install";
         }
         if (fileSha256 == null || !manifestSha256.trim().equalsIgnoreCase(fileSha256.trim())) {
             return "sha256 mismatch: the file hashes " + fileSha256
@@ -875,17 +880,17 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
     }
 
     /**
-     * The manifest's optional sha256 (hex) for the offered apk, or null when
-     * it supplies none for THIS download (item 2, issue #9: WIRED, no longer a
+     * The manifest's sha256 (hex) for the offered apk, or null when it
+     * supplies none for THIS download (item 2, issue #9: WIRED, no longer a
      * null stub — a manifest sha256 is enforced by
      * {@link #manifestSha256FailureReason}). The update manifest
      * ({@link #resolveUrl()}, the same URL the check used) is re-fetched and
      * its {@code package} entry consulted ONLY when it pins exactly the
      * offered {@code downloadUrl} for this device (see
      * {@link #apkSha256OfManifest}); a manifest naming a different apk — or
-     * none, or unparsable/unreachable — supplies no sha256 here = skip the
-     * file hash check (the pinned-signer check above still guards the apk).
-     * Never throws.
+     * none, or unparsable/unreachable — supplies no sha256 here, and the
+     * install is then refused (issue #19, fail closed: the hash check is
+     * not optional). Never throws.
      */
     protected String manifestApkSha256(String downloadUrl) {
         if (downloadUrl == null || downloadUrl.trim().isEmpty()) {
@@ -896,7 +901,7 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             manifestJson = downloadManifestJson(resolveUrl());
         } catch (IOException | RuntimeException unfetchable) {
             JukeboxLog.i(JukeboxUpdate.LOG_TAG, "manifest sha256: manifest unreadable ("
-                    + unfetchable + ") \u2014 skipping the file hash check");
+                    + unfetchable + ") \u2014 no hash to check against (fail closed)");
             return null;
         }
         String sha256 = apkSha256OfManifest(manifestJson, downloadUrl,
@@ -910,7 +915,8 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
      * Pure issue-#9 item-2 decision: the manifest {@code package} entry's
      * {@code apkSha256} (hex, trimmed) when the manifest pins exactly
      * {@code downloadUrl} for this device, else null (absent / ambiguous /
-     * mismatched = skip the check). The URL resolution mirrors
+     * mismatched = no hash for this download; the install then fails closed
+     * on that null, issue #19). The URL resolution mirrors
      * AppVersionChecker: {@code downloadUrlList_<primaryAbi>} first, then
      * {@code downloadUrlList}, then the singular {@code downloadUrl}; a list
      * pins this apk only when its single entry IS the offered URL.
@@ -927,7 +933,7 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             }
             String sha256 = packageEntry.optString("apkSha256", "").trim();
             if (sha256.isEmpty()) {
-                return null; // the manifest supplies no apk sha256: skip
+                return null; // the manifest supplies no apk sha256: nothing to enforce
             }
             String manifestUrl = null;
             if (primaryAbi != null && packageEntry.has("downloadUrlList_" + primaryAbi)) {
@@ -939,7 +945,7 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             }
             return downloadUrl.equals(manifestUrl) ? sha256 : null;
         } catch (JSONException | RuntimeException malformed) {
-            return null; // unparsable manifest supplies nothing: skip
+            return null; // unparsable manifest supplies nothing to enforce
         }
     }
 
