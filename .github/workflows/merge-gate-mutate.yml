@@ -104,14 +104,14 @@ jobs:
       - name: PIT — common
         if: env.COMMON_CLASSES != ''
         run: |
-          ./gradlew --no-daemon :common:pitestMutate \
+          bash ./gradlew --no-daemon :common:pitestMutate \
             -PpitestTargetClasses="$COMMON_CLASSES" \
             -PpitestTargetTests="$COMMON_TESTS"
 
       - name: PIT — smarttubetv
         if: env.SMARTTUBETV_CLASSES != ''
         run: |
-          ./gradlew --no-daemon :smarttubetv:pitestMutate \
+          bash ./gradlew --no-daemon :smarttubetv:pitestMutate \
             -PpitestTargetClasses="$SMARTTUBETV_CLASSES" \
             -PpitestTargetTests="$SMARTTUBETV_TESTS"
 
