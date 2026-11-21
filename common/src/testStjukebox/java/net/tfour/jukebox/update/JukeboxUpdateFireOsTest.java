@@ -182,6 +182,13 @@ public class JukeboxUpdateFireOsTest {
         net.tfour.jukebox.room.JukeboxForeground.setTestOverride(null);
         // Robolectric resets shadow state per test; be explicit anyway.
         ShadowBuild.reset();
+        // The card is app-wide static state (sVisibleCard) — a test that
+        // shows it must not leak it into the next test (see
+        // JukeboxUpdateKeyRouterTest.tearDown).
+        JukeboxUpdateCard card = JukeboxUpdateCard.shownCard();
+        if (card != null) {
+            card.dismissAttached("test cleanup");
+        }
     }
 
     private ShadowPackageManager shadowPm() {

@@ -71,6 +71,16 @@ public class JukeboxUpdateKeyRouterTest {
     @After
     public void tearDown() {
         net.tfour.jukebox.room.JukeboxForeground.setTestOverride(null);
+        // Issue #17 follow-up: the card is app-wide static state
+        // (sVisibleCard) — a test that shows it must not leak it into the
+        // next test. The router answers for the visible card wherever it is
+        // attached, so a stale card makes the no-card tests see routed keys
+        // (CI: keysDelegateUnchangedToThePlayerWhileCardIsNotVisible failed
+        // after a card-showing test ran first).
+        JukeboxUpdateCard card = JukeboxUpdateCard.shownCard();
+        if (card != null) {
+            card.dismissAttached("test cleanup");
+        }
     }
 
     private ActivityController<RecordingActivity> newActivity() {
