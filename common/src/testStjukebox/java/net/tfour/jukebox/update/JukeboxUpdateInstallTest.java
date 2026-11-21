@@ -784,6 +784,17 @@ public class JukeboxUpdateInstallTest {
         assertNull("no downloadUrl match = nothing", JukeboxUpdatePresenter
                 .apkSha256OfManifest(pinning, "https://jukebox.tfour.net/apk/other.apk",
                         "arm64-v8a"));
+        assertEquals("an explicit default port (:443) is the same URL as no"
+                        + " port — the pin still applies (issue #9 item 3)",
+                sha, JukeboxUpdatePresenter.apkSha256OfManifest(
+                        pinning,
+                        "https://jukebox.tfour.net:443/install/Jukebox_32.68_arm64-v8a.apk",
+                        "arm64-v8a"));
+        assertNull("a non-default port is a different URL = nothing",
+                JukeboxUpdatePresenter.apkSha256OfManifest(
+                        pinning,
+                        "https://jukebox.tfour.net:8443/install/Jukebox_32.68_arm64-v8a.apk",
+                        "arm64-v8a"));
         assertNull("null manifest = nothing", JukeboxUpdatePresenter
                 .apkSha256OfManifest(null, MANIFEST_URL, "arm64-v8a"));
     }
