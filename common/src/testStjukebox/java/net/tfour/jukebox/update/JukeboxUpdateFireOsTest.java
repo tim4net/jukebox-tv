@@ -283,6 +283,54 @@ public class JukeboxUpdateFireOsTest {
                 logged("Fire OS detected"));
     }
 
+    /** Finds a Button with the given text anywhere inside the shown card. */
+    private static android.widget.Button buttonOf(Activity activity, String text) {
+        View decor = activity.getWindow().getDecorView();
+        View card = decor instanceof ViewGroup
+                ? ((ViewGroup) decor).findViewWithTag(JukeboxUpdateCard.VIEW_TAG) : null;
+        if (!(card instanceof ViewGroup)) {
+            return null;
+        }
+        return findButton((ViewGroup) card, text);
+    }
+
+    private static android.widget.Button findButton(ViewGroup parent, String text) {
+        for (int i = 0; i < parent.getChildCount(); i++) {
+            View child = parent.getChildAt(i);
+            if (child instanceof android.widget.Button
+                    && text.equals(((android.widget.Button) child).getText().toString())) {
+                return (android.widget.Button) child;
+            }
+            if (child instanceof ViewGroup) {
+                android.widget.Button found = findButton((ViewGroup) child, text);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
+    @Test
+    public void fireOsStepsCardShowsOnlyDismiss() {
+        // Issue #17 (bug 2): while the card carries the on-screen steps there
+        // is nothing to install, so its buttons must match the state — the
+        // Install button is hidden, Dismiss stays.
+        TestPresenter presenter = fireTvPresenter();
+        presenter.install();
+        assertEquals(FIRE_OS_CARD_TEXT, cardText(activity));
+
+        android.widget.Button install = buttonOf(activity, "Install");
+        assertTrue("the steps card must still carry an Install button (hidden)",
+                install != null);
+        assertEquals("the Install button must be hidden while the steps show",
+                View.GONE, install.getVisibility());
+        android.widget.Button dismiss = buttonOf(activity, "Dismiss");
+        assertTrue("the steps card must keep its Dismiss button", dismiss != null);
+        assertEquals("the Dismiss button must stay visible while the steps show",
+                View.VISIBLE, dismiss.getVisibility());
+    }
+
     @Test
     public void stillDeniedOnTheFireOsForegroundShowsTheFireStepsWithoutSettingsAgain() {
         TestPresenter presenter = fireTvPresenter();
