@@ -36,6 +36,9 @@ configurations {
 
 dependencies {
     pitest 'org.pitest:pitest-command-line:1.15.0'
+    // HTML output format lives in its own artifact (the Gradle plugin adds
+    // it automatically; the CLI does not).
+    pitest 'org.pitest:pitest-html-report:1.15.0'
 }
 
 def pitestTestTask = tasks.findByName('testStjukeboxDebugUnitTest')
