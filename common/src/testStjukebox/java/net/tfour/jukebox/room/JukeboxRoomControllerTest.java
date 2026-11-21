@@ -282,6 +282,106 @@ public class JukeboxRoomControllerTest {
         assertNull("an ended song must not be reopened", presenter.getVideo());
     }
 
+    /**
+     * Format-info failure for the room song: the first failure must finish the
+     * player (fresh reopen - the Back key's recovery), not report the song
+     * ended and not reload in the same engine.
+     */
+    @Test
+    public void formatErrorOnRoomSongFinishesPlayerForFreshReopen() throws Exception {
+        playerCalls.clear();
+        controller.onFormatInfoError(Video.from(V1),
+                new IllegalStateException("fromNullable result is null"));
+        assertTrue("the player must be finished for a fresh reopen: " + playerCalls,
+                playerCalls.contains("finishReally"));
+        assertEquals("a single failure must not skip the song", 0, t.count("ended"));
+    }
+
+    /**
+     * Two failed fresh reopens, then skip: the 1st and 2nd failures finish the
+     * player, the 3rd reports the room song ended so the server advances the
+     * queue instead of leaving the TV silent forever.
+     */
+    @Test
+    public void formatErrorTwiceThenSkipsRoomSong() throws Exception {
+        controller.onFormatInfoError(Video.from(V1),
+                new IllegalStateException("fromNullable result is null"));
+        controller.onFormatInfoError(Video.from(V1),
+                new IllegalStateException("fromNullable result is null"));
+        assertEquals("two failures must not skip the song yet", 0, t.count("ended"));
+
+        controller.onFormatInfoError(Video.from(V1),
+                new IllegalStateException("fromNullable result is null"));
+        assertEquals("after two failed reopens the song must be reported ended",
+                1, t.count("ended"));
+        assertEquals("the player must be finished on every failure",
+                3, countCalls("finishReally"));
+    }
+
+    /**
+     * A format failure for a non-room video still gets a fresh reopen (which
+     * loads the room song), but must never report the room song ended.
+     */
+    @Test
+    public void formatErrorOnNonRoomVideoNeverReportsEnded() throws Exception {
+        controller.onFormatInfoError(Video.from(V2),
+                new IllegalStateException("fromNullable result is null"));
+        controller.onFormatInfoError(Video.from(V2),
+                new IllegalStateException("fromNullable result is null"));
+        controller.onFormatInfoError(Video.from(V2),
+                new IllegalStateException("fromNullable result is null"));
+        assertEquals("a non-room video must never skip the room song", 0, t.count("ended"));
+        assertTrue("a non-room failure must still reopen the player: " + playerCalls,
+                playerCalls.contains("finishReally"));
+    }
+
+    @Test
+    public void formatErrorWithNoRoomSongIsIgnored() throws Exception {
+        // Idle room (active, no song): JukeboxRoom.isRoomActive() is still true,
+        // so the song-set flag is what must gate recovery.
+        JukeboxMode.setSongSet(false);
+        playerCalls.clear();
+        controller.onFormatInfoError(Video.from(V1),
+                new IllegalStateException("fromNullable result is null"));
+        assertEquals("no room song: nothing must be finished", 0, countCalls("finishReally"));
+        assertEquals("no room song: nothing must be reported", 0, t.count("ended"));
+    }
+
+    /**
+     * A load that finished is a recovery: two failures, then a successful
+     * load of the room song, must reset the counter, so the next two failures
+     * reopen again instead of skipping.
+     */
+    @Test
+    public void successfulLoadResetsFormatErrorCounter() throws Exception {
+        controller.onFormatInfoError(Video.from(V1),
+                new IllegalStateException("fromNullable result is null"));
+        controller.onFormatInfoError(Video.from(V1),
+                new IllegalStateException("fromNullable result is null"));
+        controller.onVideoLoaded(Video.from(V1)); // the room song loads: recovered
+
+        controller.onFormatInfoError(Video.from(V1),
+                new IllegalStateException("fromNullable result is null"));
+        controller.onFormatInfoError(Video.from(V1),
+                new IllegalStateException("fromNullable result is null"));
+        assertEquals("the counter must have reset on the successful load",
+                0, t.count("ended"));
+        controller.onFormatInfoError(Video.from(V1),
+                new IllegalStateException("fromNullable result is null"));
+        assertEquals("only the third failure after the reset skips the song",
+                1, t.count("ended"));
+    }
+
+    private int countCalls(String name) {
+        int count = 0;
+        for (String call : playerCalls) {
+            if (name.equals(call)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     @Test
     public void onInitRegistersAsRoomListener() throws Exception {
         // onInit()/onViewResumed() must attach the controller to the room even when
