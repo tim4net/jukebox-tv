@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Merge-gate job 2: risky-path rules.
+// Merge-gate job 1: risky-path rules.
 //
 // Vendored from tim4net/partyq (scripts/merge-gate/) — same engine, same
 // contract; the config here carries this repo's globs (Bob's exact spec).
