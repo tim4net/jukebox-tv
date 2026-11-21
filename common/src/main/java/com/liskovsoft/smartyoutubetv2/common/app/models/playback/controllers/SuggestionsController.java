@@ -20,6 +20,7 @@ import com.liskovsoft.smartyoutubetv2.common.app.models.data.Playlist;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.VideoGroup;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.BasePlayerController;
+import com.liskovsoft.smartyoutubetv2.common.app.models.playback.JukeboxMode;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.manager.PlayerConstants;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.ui.OptionItem;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.ui.SeekBarSegment;
@@ -31,6 +32,7 @@ import com.liskovsoft.smartyoutubetv2.common.misc.MediaServiceManager;
 import com.liskovsoft.smartyoutubetv2.common.prefs.GeneralData;
 import com.liskovsoft.smartyoutubetv2.common.utils.Utils;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
+import net.tfour.jukebox.pick.JukeboxVideoPick;
 import io.reactivex.Observable;
 import io.reactivex.disposables.Disposable;
 
@@ -293,7 +295,47 @@ public class SuggestionsController extends BasePlayerController {
             result = Video.from(getVideo().nextMediaItem);
         }
 
+        // Jukebox flavor: never auto-advance into a Short. The explicit queue
+        // (fromQueue) is the user's own pick and is left alone; a suggestion
+        // or radio pick that is a Short falls back to the next full video in
+        // the current video's group, else no auto-advance.
+        if (result != null && JukeboxMode.isShortsFilterEnabled()
+                && !result.fromQueue && JukeboxVideoPick.isShortVideo(result)) {
+            result = nextFullVideoAfterCurrent();
+        }
+
         return result;
+    }
+
+    /**
+     * First full (non-Short) video after the current one in its group, or null.
+     * Shuffled playback has no "next in group": null, so nothing auto-advances.
+     */
+    private Video nextFullVideoAfterCurrent() {
+        Video current = getVideo();
+
+        if (current == null || current.isShuffled) {
+            return null;
+        }
+
+        VideoGroup group = current.getGroup();
+
+        if (group == null || group.isEmpty()) {
+            return null;
+        }
+
+        List<Video> videos = group.getVideos();
+        int start = videos.indexOf(current) + 1;
+
+        for (int i = Math.max(start, 0); i < videos.size(); i++) {
+            Video candidate = videos.get(i);
+            if (candidate != null && candidate.hasVideo() && !candidate.isUpcoming
+                    && !JukeboxVideoPick.isShortVideo(candidate)) {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 
     public Video getPrevious() {
@@ -407,6 +449,13 @@ public class SuggestionsController extends BasePlayerController {
 
             if (group != null && !group.isEmpty()) {
                 VideoGroup videoGroup = VideoGroup.from(group);
+
+                // Jukebox flavor: drop Shorts and rank official videos first.
+                // This also feeds mNextSectionVideo (the autoplay pick) via
+                // focusAndContinueIfNeeded below.
+                if (JukeboxMode.isShortsFilterEnabled()) {
+                    JukeboxVideoPick.applyToGroup(videoGroup);
+                }
 
                 if (TextUtils.isEmpty(videoGroup.getTitle())) {
                     videoGroup.setTitle(getContext().getString(R.string.suggestions));

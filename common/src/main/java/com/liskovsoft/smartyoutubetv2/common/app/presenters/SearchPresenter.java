@@ -10,6 +10,7 @@ import com.liskovsoft.sharedutils.rx.RxHelper;
 import com.liskovsoft.smartyoutubetv2.common.R;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.VideoGroup;
+import com.liskovsoft.smartyoutubetv2.common.app.models.playback.JukeboxMode;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.ui.OptionItem;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.ui.UiOptionItem;
 import com.liskovsoft.smartyoutubetv2.common.app.models.search.MediaServiceSearchTagProvider;
@@ -23,6 +24,7 @@ import com.liskovsoft.smartyoutubetv2.common.misc.BrowseProcessorManager;
 import com.liskovsoft.smartyoutubetv2.common.misc.MediaServiceManager;
 import com.liskovsoft.smartyoutubetv2.common.prefs.AccountsData;
 import com.liskovsoft.smartyoutubetv2.common.utils.AppDialogUtil;
+import net.tfour.jukebox.pick.JukeboxVideoPick;
 import io.reactivex.disposables.Disposable;
 
 import java.util.ArrayList;
@@ -185,6 +187,11 @@ public class SearchPresenter extends BasePresenter<SearchView> implements VideoG
                             Log.d(TAG, "Receiving results for '%s'", searchText);
                             for (MediaGroup mediaGroup : mediaGroups) {
                                 VideoGroup group = VideoGroup.from(mediaGroup);
+                                // Jukebox flavor: drop Shorts and rank official videos
+                                // first, before the first result can auto-play or display.
+                                if (JukeboxMode.isShortsFilterEnabled()) {
+                                    JukeboxVideoPick.applyToGroup(group);
+                                }
                                 startPlayFirstVideo(group);
                                 getView().updateSearch(group);
                                 mBrowseProcessor.process(group);
@@ -225,6 +232,11 @@ public class SearchPresenter extends BasePresenter<SearchView> implements VideoG
                 .subscribe(
                         continueMediaGroup -> {
                             VideoGroup newGroup = VideoGroup.from(group, continueMediaGroup);
+                            // Jukebox flavor: drop Shorts from the appended page.
+                            // Order is kept (no re-rank) so already-shown rows stay put.
+                            if (JukeboxMode.isShortsFilterEnabled()) {
+                                JukeboxVideoPick.filterShortsOnly(newGroup);
+                            }
                             getView().updateSearch(newGroup);
                             mBrowseProcessor.process(newGroup);
                         },

@@ -107,6 +107,12 @@ public class JukeboxRoomClientTest {
         return "{\"t\":\"play\",\"song\":{\"songId\":\"" + songId + "\",\"videoId\":\"" + videoId + "\",\"title\":\"T " + songId + "\",\"durationMs\":null}}";
     }
 
+    static String play(String songId, String videoId, String title, Long durationMs) {
+        return "{\"t\":\"play\",\"song\":{\"songId\":\"" + songId + "\",\"videoId\":\"" + videoId
+                + "\",\"title\":\"" + title + "\",\"durationMs\":"
+                + (durationMs == null ? "null" : durationMs) + "}}";
+    }
+
     static String state(String songId, String videoId) {
         return "{\"t\":\"state\",\"room\":\"room1\",\"nowPlaying\":{\"songId\":\"" + songId
                 + "\",\"videoId\":\"" + videoId + "\",\"title\":\"T " + songId
@@ -250,6 +256,59 @@ public class JukeboxRoomClientTest {
         c.start(); t.open();
         t.msg(play("s1", "bad<id>"));
         assertTrue(rec.plays.isEmpty());
+    }
+
+    @Test
+    public void shortGuestRequestIsSkippedAndEndedSent() throws Exception {
+        c.start(); t.open();
+        t.msg(play("s1", V1, "Blinding Lights", 45_000L));
+        assertTrue(rec.plays.isEmpty()); // never opened
+        JSONObject ended = t.only("ended");
+        assertEquals("s1", ended.getString("songId"));
+        assertEquals(V1, ended.getString("videoId"));
+    }
+
+    @Test
+    public void fullLengthGuestRequestStillOpens() throws Exception {
+        c.start(); t.open();
+        t.msg(play("s1", V1, "Blinding Lights", 200_000L));
+        assertEquals(java.util.Arrays.asList(V1), rec.plays);
+        assertEquals(0, t.count("ended"));
+    }
+
+    @Test
+    public void unknownDurationGuestRequestFailsOpen() throws Exception {
+        c.start(); t.open();
+        t.msg(play("s1", V1, "Blinding Lights", null));
+        assertEquals(java.util.Arrays.asList(V1), rec.plays);
+        assertEquals(0, t.count("ended"));
+    }
+
+    @Test
+    public void shortsTitleGuestRequestIsSkipped() throws Exception {
+        c.start(); t.open();
+        t.msg(play("s1", V1, "Blinding Lights #Shorts", null));
+        assertTrue(rec.plays.isEmpty());
+        assertEquals(1, t.count("ended"));
+    }
+
+    @Test
+    public void afterSkippedShortServerAdvancePlaysNextSong() throws Exception {
+        c.start(); t.open();
+        t.msg(play("s1", V1, "Blinding Lights", 45_000L));
+        assertTrue(rec.plays.isEmpty());
+        t.msg(play("s2", V2, "Levitating", 203_000L));
+        assertEquals(java.util.Arrays.asList(V2), rec.plays);
+        assertEquals(1, t.count("ended")); // only the Short was ended
+    }
+
+    @Test
+    public void stateAdoptedShortIsStillSkippedOnPlay() throws Exception {
+        c.start(); t.open();
+        t.msg(state("s1", V1)); // snapshot adopts the song, no play yet
+        t.msg(play("s1", V1, "Blinding Lights", 45_000L));
+        assertTrue(rec.plays.isEmpty());
+        assertEquals(1, t.count("ended"));
     }
 
     @Test
