@@ -29,7 +29,7 @@ if [ -z "$BASE" ]; then
   exit 0
 fi
 
-TMP="$(mktemp)"
+TMP="$(mktemp).json"
 trap 'rm -f "$TMP"' EXIT INT TERM
 
 BASE_SHA="$BASE" OUT="$TMP" node scripts/merge-gate/pitest-targets.mjs
