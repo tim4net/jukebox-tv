@@ -288,7 +288,7 @@ public class JukeboxRoomControllerTest {
      * ended and not reload in the same engine.
      */
     @Test
-    public void formatErrorOnRoomSongFinishesPlayerForFreshReopen() {
+    public void formatErrorOnRoomSongFinishesPlayerForFreshReopen() throws Exception {
         playerCalls.clear();
         controller.onFormatInfoError(Video.from(V1),
                 new IllegalStateException("fromNullable result is null"));
@@ -303,7 +303,7 @@ public class JukeboxRoomControllerTest {
      * queue instead of leaving the TV silent forever.
      */
     @Test
-    public void formatErrorTwiceThenSkipsRoomSong() {
+    public void formatErrorTwiceThenSkipsRoomSong() throws Exception {
         controller.onFormatInfoError(Video.from(V1),
                 new IllegalStateException("fromNullable result is null"));
         controller.onFormatInfoError(Video.from(V1),
@@ -323,7 +323,7 @@ public class JukeboxRoomControllerTest {
      * loads the room song), but must never report the room song ended.
      */
     @Test
-    public void formatErrorOnNonRoomVideoNeverReportsEnded() {
+    public void formatErrorOnNonRoomVideoNeverReportsEnded() throws Exception {
         controller.onFormatInfoError(Video.from(V2),
                 new IllegalStateException("fromNullable result is null"));
         controller.onFormatInfoError(Video.from(V2),
@@ -336,7 +336,7 @@ public class JukeboxRoomControllerTest {
     }
 
     @Test
-    public void formatErrorWithNoRoomSongIsIgnored() {
+    public void formatErrorWithNoRoomSongIsIgnored() throws Exception {
         // Idle room (active, no song): JukeboxRoom.isRoomActive() is still true,
         // so the song-set flag is what must gate recovery.
         JukeboxMode.setSongSet(false);
@@ -353,7 +353,7 @@ public class JukeboxRoomControllerTest {
      * reopen again instead of skipping.
      */
     @Test
-    public void successfulLoadResetsFormatErrorCounter() {
+    public void successfulLoadResetsFormatErrorCounter() throws Exception {
         controller.onFormatInfoError(Video.from(V1),
                 new IllegalStateException("fromNullable result is null"));
         controller.onFormatInfoError(Video.from(V1),

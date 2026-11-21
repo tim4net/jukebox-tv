@@ -465,10 +465,22 @@ public class JukeboxRoomController extends BasePlayerController implements Jukeb
         finishPlayerForReopen();
     }
 
-    /** Finishes the player so the engine release reopens the room song fresh. */
+    /**
+     * Finishes the player so the engine release reopens the room song fresh.
+     * Finishes via {@code getPlayer()} rather than the presenter's
+     * {@code forceFinish()}: the presenter only finishes when
+     * {@code getView()} is non-null, and that stays null when the view's
+     * Activity is not alive (and in the Robolectric harness, where the
+     * proxy view has no Activity at all), so the reopen would never
+     * happen. In production both are the same view object, so behavior on
+     * the TV is identical. If the Activity is already dead,
+     * {@code getPlayer()} can still be non-null while {@code getView()}
+     * is null; finishing then is benign (a no-op on a dead Activity).
+     */
     private void finishPlayerForReopen() {
-        if (getPlayer() != null && getPlaybackPresenter() != null) {
-            getPlaybackPresenter().forceFinish();
+        PlaybackView player = getPlayer();
+        if (player != null) {
+            player.finishReally();
         }
     }
 
