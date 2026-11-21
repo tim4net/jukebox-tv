@@ -125,6 +125,9 @@ public class JukeboxProtocolTest {
         assertEquals("TAUGHT", JukeboxProtocol.normalizeJoinCode(" taught "));
         assertEquals("TAUGHT", JukeboxProtocol.normalizeJoinCode("taught"));
         assertEquals("T6E6S6", JukeboxProtocol.normalizeJoinCode("t6e6s6"));
+        assertEquals("TAUGHT", JukeboxProtocol.normalizeJoinCode("#taught"));
+        assertEquals("TAUGHT", JukeboxProtocol.normalizeJoinCode("  #TAUGHT  "));
+        assertNull(JukeboxProtocol.normalizeJoinCode("#"));
         assertNull(JukeboxProtocol.normalizeJoinCode(null));
         assertNull(JukeboxProtocol.normalizeJoinCode("   "));
 
