@@ -41,8 +41,18 @@ dependencies {
     pitest 'org.pitest:pitest-html-report:1.15.0'
 }
 
-def pitestTestTask = tasks.findByName('testStjukeboxDebugUnitTest')
-if (pitestTestTask != null) {
+def pitestTestTaskName = 'testStjukeboxDebugUnitTest'
+// AGP creates the variant test tasks in its own afterEvaluate, which runs
+// before this one (the android plugin is applied at the top of the
+// module's build.gradle, this script is applied at the bottom). Looking
+// the task up at apply time returns null — the task does not exist yet —
+// so the lookup and the registration happen here, not at apply time.
+project.afterEvaluate {
+    def pitestTestTask = tasks.findByName(pitestTestTaskName)
+    if (pitestTestTask == null) {
+        logger.warn("pitestMutate: ${pitestTestTaskName} not found; mutation task not registered")
+        return
+    }
     tasks.register('pitestMutate', JavaExec) {
         group = 'verification'
         description = 'Run PIT mutation testing on changed Jukebox classes (merge gate). ' +
