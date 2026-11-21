@@ -207,7 +207,7 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
                     + " install " + pending + ", re-offering");
             // Issue #7: on Fire OS the unknown-apps settings are a dead end,
             // so the card carries the full on-screen steps there.
-            runOnMain(() -> cardText(isFireOs(mAppContext)
+            runOnMain(() -> cardGuidanceText(isFireOs(mAppContext)
                     ? FIRE_OS_CARD_TEXT : ALLOW_INSTALLS_CARD_TEXT));
             return;
         }
@@ -565,7 +565,7 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             JukeboxLog.i(JukeboxUpdate.LOG_TAG, "install blocked: installs"
                     + " from unknown apps are not allowed \u2014 keeping "
                     + path + " pending, opening the unknown-apps settings");
-            runOnMain(() -> cardText(ALLOW_INSTALLS_CARD_TEXT));
+            runOnMain(() -> cardGuidanceText(ALLOW_INSTALLS_CARD_TEXT));
             openUnknownAppSourcesSettings();
             return;
         }
@@ -700,6 +700,19 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
         Activity activity = mCurrentActivity.get();
         if (activity != null) {
             JukeboxUpdateCard.setText(activity, text);
+        }
+    }
+
+    /**
+     * Issue #17 (bug 2): updates the card with guidance text (the Fire OS
+     * steps, or the unknown-apps / security fallbacks) — the Install button
+     * is hidden and the card's primary action becomes dismiss, since there
+     * is nothing to install while the steps are showing.
+     */
+    private void cardGuidanceText(String text) {
+        Activity activity = mCurrentActivity.get();
+        if (activity != null) {
+            JukeboxUpdateCard.setGuidanceText(activity, text);
         }
     }
 
@@ -1089,7 +1102,7 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
             JukeboxLog.i(JukeboxUpdate.LOG_TAG, "Fire OS detected: not opening"
                     + " the unknown-apps settings (no per-app toggle there)"
                     + " \u2014 showing the on-screen steps on the card instead");
-            runOnMain(() -> cardText(FIRE_OS_CARD_TEXT));
+            runOnMain(() -> cardGuidanceText(FIRE_OS_CARD_TEXT));
             return;
         }
         Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
@@ -1109,13 +1122,13 @@ public class JukeboxUpdatePresenter implements AppUpdateCheckerListener {
                             + "): falling back to " + Settings.ACTION_SECURITY_SETTINGS);
             Intent security = new Intent(Settings.ACTION_SECURITY_SETTINGS);
             security.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            runOnMain(() -> cardText(SECURITY_FALLBACK_CARD_TEXT));
+            runOnMain(() -> cardGuidanceText(SECURITY_FALLBACK_CARD_TEXT));
             try {
                 startActivity(security);
             } catch (ActivityNotFoundException alsoUnresolvable) {
                 JukeboxLog.i(JukeboxUpdate.LOG_TAG, "security settings also unresolvable ("
                         + alsoUnresolvable.getMessage() + "): showing the final instructions");
-                runOnMain(() -> cardText(BOTH_UNRESOLVABLE_CARD_TEXT));
+                runOnMain(() -> cardGuidanceText(BOTH_UNRESOLVABLE_CARD_TEXT));
             }
         }
     }

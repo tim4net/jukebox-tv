@@ -35,9 +35,11 @@ import net.tfour.jukebox.room.JukeboxLog;
  * <li>the card itself is focusable+clickable and the Install/Dismiss buttons
  *     are focusable, so a plain DPAD UP / DPAD navigation or MENU traversal
  *     moves focus onto the card; OK on the focused card (or its Install
- *     button) installs, and the card consumes the key event itself — nothing
- *     leaks to the player. While the card does NOT have focus it never
- *     intercepts anything (no key swallowing conflict with room songs);</li>
+ *     button) is the card's primary action — install in offer mode, dismiss
+ *     in guidance mode (issue #17 bug 2) — and the card consumes the key
+ *     event itself — nothing leaks to the player. While the card does NOT
+ *     have focus it never intercepts anything (no key swallowing conflict
+ *     with room songs);</li>
  * <li>the card never calls requestFocus(): the player's focus is only ever
  *     moved BY the user, towards the card;</li>
  * <li>auto-hides ~15s after being shown, so it cannot linger over a room
@@ -48,6 +50,13 @@ import net.tfour.jukebox.room.JukeboxLog;
 public class JukeboxUpdateCard extends LinearLayout {
     public static final String VIEW_TAG = "jukebox_update_card";
     static final long AUTO_HIDE_MS = 15_000;
+    /**
+     * Issue #17 (bug 2): the Fire OS steps text is one very long line, and
+     * with WRAP_CONTENT the card grew wide enough to cover the "Jukebox TV"
+     * title on the Join screen. The message text wraps at this width, so the
+     * card stays in the top-right corner and can never reach the title.
+     */
+    static final int TEXT_MAX_WIDTH_DP = 620;
 
     /** Install action (the existing upstream download+install path). */
     public interface Install {
@@ -58,6 +67,15 @@ public class JukeboxUpdateCard extends LinearLayout {
     private Activity mActivity;
     private Install mInstall;
     private TextView mText;
+    private Button mInstallButton;
+    /**
+     * Issue #17 (bug 2): true while the card carries guidance text (the Fire
+     * OS steps, or the unknown-apps / security fallbacks) instead of an
+     * offer. In that state there is nothing to install — the user must follow
+     * the steps and come back — so the Install button is hidden and the
+     * card's primary action (OK key / card click) dismisses instead.
+     */
+    private boolean mGuidance;
 
     /**
      * Build 2473 gazebo (a)/(b): the ONE card currently shown, wherever it is
@@ -72,8 +90,21 @@ public class JukeboxUpdateCard extends LinearLayout {
         super(context);
     }
 
-    /** Runs the install action the card was shown with (never null-safe-crashes). */
-    void invokeInstall() {
+    /** True while the card carries guidance text (no install available). */
+    boolean isGuidance() {
+        return mGuidance;
+    }
+
+    /**
+     * The card's primary action (OK key / card click): install in offer mode,
+     * dismiss in guidance mode (issue #17 bug 2 — there is nothing to install
+     * while the steps are showing). Never null-safe-crashes.
+     */
+    void invokePrimaryAction() {
+        if (mGuidance) {
+            dismissAttached("dismissed (OK on the guidance card)");
+            return;
+        }
         Install install = mInstall;
         if (install != null) {
             install.install();
@@ -101,6 +132,38 @@ public class JukeboxUpdateCard extends LinearLayout {
             card.mText.setText(text);
             card.mText.setContentDescription(text);
             JukeboxLog.i(JukeboxUpdate.LOG_TAG, "prompt text: \"" + text + "\"");
+        }
+    }
+
+    /**
+     * Replaces the card's text with guidance text (the Fire OS on-screen
+     * steps, or the unknown-apps / security fallbacks), if the card is
+     * currently shown on the given activity. Guidance means there is nothing
+     * to install — the user must follow the steps and come back — so the
+     * Install button is hidden and the card's primary action (OK key / card
+     * click) dismisses instead (issue #17 bug 2). Idempotent, never crashes.
+     */
+    static void setGuidanceText(Activity activity, String text) {
+        if (activity == null || activity.getWindow() == null) {
+            return;
+        }
+        View decor = activity.getWindow().getDecorView();
+        if (!(decor instanceof ViewGroup)) {
+            return;
+        }
+        View existing = ((ViewGroup) decor).findViewWithTag(VIEW_TAG);
+        if (!(existing instanceof JukeboxUpdateCard)) {
+            return;
+        }
+        JukeboxUpdateCard card = (JukeboxUpdateCard) existing;
+        if (card.mText != null) {
+            card.mText.setText(text);
+            card.mText.setContentDescription(text);
+            JukeboxLog.i(JukeboxUpdate.LOG_TAG, "prompt text: \"" + text + "\" (guidance)");
+        }
+        card.mGuidance = true;
+        if (card.mInstallButton != null) {
+            card.mInstallButton.setVisibility(GONE);
         }
     }
 
@@ -142,8 +205,9 @@ public class JukeboxUpdateCard extends LinearLayout {
         card.setFocusable(true);
         card.setFocusableInTouchMode(false);
         card.setClickable(true);
-        // OK on the focused card itself = install (same as the Install button).
-        card.setOnClickListener(v -> install.install());
+        // OK on the focused card itself = the card's primary action (install
+        // in offer mode, dismiss in guidance mode — issue #17 bug 2).
+        card.setOnClickListener(v -> card.invokePrimaryAction());
 
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(0xEE202020);
@@ -158,6 +222,9 @@ public class JukeboxUpdateCard extends LinearLayout {
         text.setTextSize(TypedValue.COMPLEX_UNIT_SP, isTv(card) ? 18 : 14);
         text.setTypeface(Typeface.DEFAULT_BOLD);
         text.setContentDescription(message);
+        // Issue #17 (bug 2): cap the text width so the card can never grow
+        // wide enough to cover the Join screen's title.
+        text.setMaxWidth(dp(card, TEXT_MAX_WIDTH_DP));
         card.mText = text;
         card.addView(text, new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
 
@@ -173,6 +240,7 @@ public class JukeboxUpdateCard extends LinearLayout {
         installButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, isTv(card) ? 16 : 13);
         installButton.setOnClickListener(v -> install.install());
         buttons.addView(installButton, buttonLp(card, 0));
+        card.mInstallButton = installButton;
 
         Button dismissButton = new Button(activity);
         dismissButton.setText("Dismiss");
@@ -187,6 +255,13 @@ public class JukeboxUpdateCard extends LinearLayout {
         frame.addView(card, lp);
         card.bringToFront();
         sVisibleCard = card;
+        // Issue #17 (bug 1): the card is shown from the async manifest check
+        // against the (possibly stale) resumed activity — its key router may
+        // not be attached (e.g. the check completed mid-hop, after that
+        // activity paused and its router was detached). Attach it here, so
+        // the first OK after the card becomes visible is always routed.
+        // Idempotent: an already-wrapped window is left as is.
+        JukeboxUpdateKeyRouter.attach(activity);
         // Auto-hide: the card disappears on its own so it can never linger
         // over a room song; a fresh check re-shows it on the next transition.
         card.mHandler.postDelayed(card::autoHide, AUTO_HIDE_MS);
@@ -279,6 +354,10 @@ public class JukeboxUpdateCard extends LinearLayout {
         card.mActivity = activity;
         frame.addView(card, lp);
         card.bringToFront();
+        // Issue #17 (bug 1): the card's key handling must follow it — attach
+        // the router on the destination activity too (idempotent; the resume
+        // hook normally attaches first, but move() must never rely on that).
+        JukeboxUpdateKeyRouter.attach(activity);
         JukeboxLog.i(JukeboxUpdate.LOG_TAG,
                 "prompt moved to the resumed foreground activity (the update card follows the foreground)");
     }
