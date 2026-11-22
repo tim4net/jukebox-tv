@@ -565,8 +565,12 @@ public class JukeboxUpdateInstallTest {
     @Test
     public void explicitPort443IsStillDownloaded() {
         // Guard (must stay green): 443 is the https default — explicit is fine.
+        // The offered URL must name the SAME apk the manifest pins
+        // (MANIFEST_URL, only spelled with :443): the fail-closed sha256 pin
+        // matches on the full URL, so a different filename is a different
+        // apk and is rightly refused — that is not a port problem.
         TestPresenter presenter =
-                offeredWithMatchingApk("https://jukebox.tfour.net:443/install/jukebox-tv.apk");
+                offeredWithMatchingApk("https://jukebox.tfour.net:443/install/Jukebox_32.68_arm64-v8a.apk");
 
         presenter.install();
 
