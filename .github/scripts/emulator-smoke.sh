@@ -12,7 +12,17 @@ adb_t() { timeout "$ADB_TIMEOUT" adb "$@"; }
 
 bash ./gradlew --no-daemon :smarttubetv:assembleStjukeboxDebug
 
-APK="$(ls smarttubetv/build/outputs/apk/stjukebox/debug/Jukebox_*_universal.apk)"
+# Bob's nit on #42: fail loudly unless the build produced exactly one
+# universal APK. With zero matches `ls` dies with a cryptic error, and
+# with two the variable holds two paths and `adb install` gets a broken
+# filename — so count the matches first and refuse anything but one.
+shopt -s nullglob
+apks=(smarttubetv/build/outputs/apk/stjukebox/debug/Jukebox_*_universal.apk)
+if [[ ${#apks[@]} -ne 1 ]]; then
+  echo "expected exactly one Jukebox_*_universal.apk, found ${#apks[@]}: ${apks[*]:-none}" >&2
+  exit 1
+fi
+APK="${apks[0]}"
 # The AVD cache restores userdata, so a previous run's install of the app may
 # still be present — signed with that runner's throwaway debug keystore, which
 # differs from this run's. Uninstall first so the reinstall can't die with
