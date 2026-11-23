@@ -304,6 +304,7 @@ public final class JukeboxProtocol {
      * Join codes are 6 chars, letters A-Z plus legacy digits 2-9 (partyq
      * src/codes.ts CODE_RE, case-insensitive on the server). Normalizes
      * user input the way the server matches it: trimmed and upper-cased.
+     * A leading '#' (codes pasted from chat often carry one) is stripped.
      * Returns null for a null/blank input.
      */
     public static String normalizeJoinCode(String raw) {
@@ -311,6 +312,9 @@ public final class JukeboxProtocol {
             return null;
         }
         String code = raw.trim().toUpperCase(java.util.Locale.ROOT);
+        if (code.startsWith("#")) {
+            code = code.substring(1);
+        }
         return code.isEmpty() ? null : code;
     }
 
