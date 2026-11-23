@@ -71,6 +71,16 @@ public class JukeboxUpdateKeyRouterTest {
     @After
     public void tearDown() {
         net.tfour.jukebox.room.JukeboxForeground.setTestOverride(null);
+        // Issue #17 follow-up: the card is app-wide static state
+        // (sVisibleCard) — a test that shows it must not leak it into the
+        // next test. The router answers for the visible card wherever it is
+        // attached, so a stale card makes the no-card tests see routed keys
+        // (CI: keysDelegateUnchangedToThePlayerWhileCardIsNotVisible failed
+        // after a card-showing test ran first).
+        JukeboxUpdateCard card = JukeboxUpdateCard.shownCard();
+        if (card != null) {
+            card.dismissAttached("test cleanup");
+        }
     }
 
     private ActivityController<RecordingActivity> newActivity() {
@@ -246,6 +256,99 @@ public class JukeboxUpdateKeyRouterTest {
                 activity, window.getCallback());
         JukeboxUpdateKeyRouter.detach(activity); // detach without wrapper: NOP
         assertSame(activity, window.getCallback());
+    }
+
+    // ---- issue #17 (bug 1): the first OK after the card appears must route ----
+
+    @Test
+    public void firstOkAfterCardAppearsInstallsEvenWhenTheRouterWasNotAttachedYet() {
+        // Issue #17 (bug 1): the card is shown from the async manifest check
+        // against the (possibly stale) resumed activity, whose key router may
+        // not be attached yet — e.g. the check completed mid-hop, after that
+        // activity paused and its router was detached. The first OK after the
+        // card becomes visible must still be routed exactly once.
+        // NOTE: no JukeboxUpdateKeyRouter.attach() call here — show() must
+        // attach the router itself.
+        RecordingActivity activity = Robolectric.buildActivity(RecordingActivity.class)
+                .setup().get();
+        RecordingInstall install = new RecordingInstall();
+        JukeboxUpdateCard.show(activity, "32.68", 2473, install);
+        assertNotNull(cardOf(activity));
+
+        Window.Callback callback = activity.getWindow().getCallback();
+        assertTrue("show() must attach the key router on the card's activity",
+                callback instanceof JukeboxUpdateKeyRouter);
+        assertTrue(callback.dispatchKeyEvent(
+                new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER)));
+        assertTrue(callback.dispatchKeyEvent(
+                new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_CENTER)));
+        assertEquals("the first OK after the card appears must install exactly once",
+                1, install.calls);
+        assertTrue(logged("key routed to the update card"));
+    }
+
+    @Test
+    public void cardMovedToANewActivityHasItsRouterAttached() {
+        // Issue #17 (bug 1): when the card moves to a newly resumed activity,
+        // the router must be attached there too — the move must never rely on
+        // the resume hook having attached first.
+        RecordingActivity old = newActivity().get();
+        RecordingInstall install = new RecordingInstall();
+        JukeboxUpdateCard.show(old, "32.68", 2473, install);
+        assertNotNull(cardOf(old));
+
+        RecordingActivity foreground = Robolectric.buildActivity(RecordingActivity.class)
+                .setup().get();
+        JukeboxUpdateCard.move(foreground);
+        assertNull("the card must have moved off the old activity's decor",
+                cardOf(old));
+        assertNotNull(cardOf(foreground));
+
+        Window.Callback callback = foreground.getWindow().getCallback();
+        assertTrue("move() must attach the key router on the destination activity",
+                callback instanceof JukeboxUpdateKeyRouter);
+        assertTrue(callback.dispatchKeyEvent(
+                new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER)));
+        assertTrue(callback.dispatchKeyEvent(
+                new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_CENTER)));
+        assertEquals("OK on the moved-to activity must install exactly once",
+                1, install.calls);
+    }
+
+    @Test
+    public void okOnGuidanceCardDismissesInsteadOfInstalling() {
+        // Issue #17 (bug 2): while the card carries guidance text there is
+        // nothing to install — OK is the card's primary action, so it
+        // dismisses instead of installing.
+        RecordingActivity activity = newActivity().get();
+        RecordingInstall install = new RecordingInstall();
+        JukeboxUpdateCard.show(activity, "32.68", 2473, install);
+        assertNotNull(cardOf(activity));
+        JukeboxUpdateCard.setGuidanceText(activity,
+                JukeboxUpdatePresenter.FIRE_OS_CARD_TEXT);
+
+        assertTrue(dispatch(activity, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER));
+        assertTrue(dispatch(activity, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_CENTER));
+        assertEquals("OK on a guidance card must never install", 0, install.calls);
+        assertNull("OK on a guidance card must dismiss it", cardOf(activity));
+        assertTrue(logged("guidance card"));
+    }
+
+    @Test
+    public void updateCardTextIsWidthCappedSoItCannotCoverTheTitle() {
+        // Issue #17 (bug 2): the Fire OS steps are one very long line; with
+        // WRAP_CONTENT the card grew wide enough to cover the Join screen's
+        // title. The message text must wrap at a capped width.
+        RecordingActivity activity = newActivity().get();
+        JukeboxUpdateCard.show(activity, "32.68", 2473, new RecordingInstall());
+        View card = cardOf(activity);
+        assertNotNull(card);
+        View text = ((ViewGroup) card).getChildAt(0);
+        assertTrue(text instanceof android.widget.TextView);
+        int expected = Math.round(JukeboxUpdateCard.TEXT_MAX_WIDTH_DP
+                * activity.getResources().getDisplayMetrics().density);
+        assertEquals("the message text must wrap at the capped width",
+                expected, ((android.widget.TextView) text).getMaxWidth());
     }
 
     @Test

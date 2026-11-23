@@ -32,9 +32,10 @@ import java.util.List;
  * the card's keys at the very top of the dispatch — BEFORE the view
  * hierarchy, the player glue or JukeboxMode can see them:
  * <ul>
- * <li>OK (DPAD_CENTER / ENTER) = install — consumed on DOWN and UP, the
- *     action runs on UP (click semantics, so key repeat cannot re-run
- *     it);</li>
+ * <li>OK (DPAD_CENTER / ENTER) = the card's primary action — install in
+ *     offer mode, dismiss in guidance mode (issue #17 bug 2) — consumed on
+ *     DOWN and UP, the action runs on UP (click semantics, so key repeat
+ *     cannot re-run it);</li>
  * <li>BACK = dismiss (hidden until the next foreground transition), consumed
  *     by the CURRENT foreground activity's router wherever the card is
  *     attached (Nina's 2473 gazebo (b)).</li>
@@ -154,9 +155,12 @@ public class JukeboxUpdateKeyRouter implements Window.Callback {
                 return false; // UP whose DOWN this router never consumed: pass through
             }
             mConsumedInstallDown = false;
+            // Issue #17 (bug 2): in guidance mode the card's primary action
+            // is dismiss (there is nothing to install while the steps show).
             JukeboxLog.i(JukeboxUpdate.LOG_TAG, "key routed to the update card: "
-                    + KeyEvent.keyCodeToString(keyCode) + " = install");
-            card.invokeInstall();
+                    + KeyEvent.keyCodeToString(keyCode) + " = "
+                    + (card.isGuidance() ? "dismiss (guidance card)" : "install"));
+            card.invokePrimaryAction();
             return true;
         }
         if (keyCode == KeyEvent.KEYCODE_BACK) {
