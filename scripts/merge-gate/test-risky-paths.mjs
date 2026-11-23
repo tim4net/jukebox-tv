@@ -87,3 +87,27 @@ test("the gate's own diff flags (workflows are ci-publish)", () => {
     ".github/workflows/merge-gate.yml:ci-publish",
   ]);
 });
+
+test("the config pins Bob's exact glob list (13 globs, in category order)", () => {
+  // Pinning the whole list means dropping any glob — e.g. root
+  // build.gradle or settings.gradle — fails this test instead of
+  // silently narrowing the gate. Do not edit this list without Bob.
+  assert.deepEqual(
+    categories.flatMap((c) => c.globs),
+    [
+      ".github/workflows/**",
+      "scripts/make-update-manifest.sh",
+      "keystore.properties",
+      "**/*.jks",
+      "**/*keystore*",
+      "smarttubetv/build.gradle",
+      "common/build.gradle",
+      "build.gradle",
+      "settings.gradle",
+      "gradle.properties",
+      "common/src/stjukebox/res/values/update_urls.xml",
+      "common/src/stjukebox/java/net/tfour/jukebox/room/**",
+      "smarttubetv/src/stjukebox/AndroidManifest.xml",
+    ],
+  );
+});

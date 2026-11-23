@@ -31,11 +31,15 @@ on a changed line; if line-level data is unavailable, mutation score
 >= 80% on the changed classes with every survivor listed. Survivors on
 unchanged lines are listed but do not fail the gate.
 
-Schedule (Bob's spec, hard): the `mutate` label and nightly — **never on
-every push**, and never attached to `build-apks.yml`. Add the `mutate`
-label to a PR to run the check there; nightly runs the same check over
-the classes changed in the last 24h on the default branch, reusing PIT's
-incremental history (cached between runs).
+Schedule (Bob's spec, hard): the `mutate` label — **never on every
+push**, and never attached to `build-apks.yml`. Add the `mutate` label
+to a PR to run the check there; manual dispatch runs the same check over
+the classes changed in the last 24h on this branch, reusing PIT's
+incremental history (cached between runs). Nightly is **not** wired:
+scheduled workflows only fire from the default branch (`master`) and
+this gate targets `jukebox-p0-tv`, so a cron in this workflow would be
+a no-op. A real nightly needs a thin dispatcher on `master` that checks
+out `jukebox-p0-tv` — a separate, master-targeting PR, not this one.
 
 ## Why PIT via the command line, not the Gradle plugin
 
@@ -58,7 +62,9 @@ scripts/merge-gate/install-hooks.sh
 Every push then runs the mutation check on the Jukebox classes it changes
 (diffed against the merge-base with `origin/jukebox-p0-tv`). Skip it for
 a docs-only push with `SKIP_MUTATION=1 git push` — CI on the `mutate`
-label / nightly still runs the real check.
+label still runs the real check. The hook fails closed when it cannot
+find the merge-base (fresh clone that hasn't fetched the base): fetch it
+or use the `SKIP_MUTATION=1` escape hatch.
 
 In an offline sandbox, pass extra Gradle arguments (e.g. a local-repo
 init script) with `MERGE_GATE_GRADLE_ARGS`:

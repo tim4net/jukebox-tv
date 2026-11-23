@@ -9,8 +9,14 @@
 //      not executed by any test at all (PIT never runs such mutants, so
 //      they do not "survive"; untested changed code still fails the gate), or
 //   3. the mutation score on changed classes is below the configured
-//      minimum (only used when changed-line data is unavailable).
-// Survivors on UNCHANGED lines are listed but do not fail the gate.
+//      minimum (only used when changed-line data is unavailable), or
+//   4. any mutant on a changed line is inconclusive (TIMED_OUT,
+//      MEMORY_ERROR, RUN_ERROR) — PIT could not decide whether it is
+//      killed, so the gate fails closed rather than passing it.
+// Survivors on UNCHANGED lines are listed but do not fail the gate, and
+// the same holds for inconclusive mutants on unchanged lines (in
+// practice Robolectric under PIT times out a lot on a small box —
+// environmental, not a changed-line verdict).
 // Classes with no mutants at all (e.g. no runnable test) are listed as
 // uncovered and fail the gate — a change with no mutation coverage is not
 // "covered".
@@ -79,6 +85,8 @@ let total = 0;
 const survivorsOnChangedLines = [];
 const noCoverageOnChangedLines = [];
 const survivorsElsewhere = [];
+const inconclusiveOnChangedLines = [];
+const inconclusiveElsewhere = [];
 const seenClasses = new Set();
 let reportsFound = 0;
 
@@ -112,9 +120,22 @@ for (const reportPath of REPORT_PATHS) {
       // Untested changed code: PIT never runs these mutants, so they do
       // not show up as survivors — fail closed instead.
       noCoverageOnChangedLines.push({ class: cls, line });
+    } else if (
+      status === "TIMED_OUT" ||
+      status === "MEMORY_ERROR" ||
+      status === "RUN_ERROR"
+    ) {
+      // Inconclusive: PIT could not decide whether the mutant is killed.
+      // On a changed line that is a fail-closed case, not a pass.
+      const entry = { class: cls, line, status };
+      if (onChangedLine) {
+        inconclusiveOnChangedLines.push(entry);
+      } else {
+        inconclusiveElsewhere.push(entry);
+      }
     }
-    // TIMED_OUT / MEMORY_ERROR / RUN_ERROR / NON_VIABLE count as
-    // neither killed nor survived in the score; they are listed below.
+    // NON_VIABLE counts as neither killed nor survived in the score and
+    // is not listed: it means PIT could not build the mutant at all.
   }
 }
 
@@ -134,6 +155,18 @@ if (noCoverageOnChangedLines.length > 0) {
   console.log("NO-COVERAGE MUTANTS ON CHANGED LINES (fail — changed code no test executes):");
   for (const s of noCoverageOnChangedLines) {
     console.log(`  - ${s.class}:${s.line}`);
+  }
+}
+if (inconclusiveOnChangedLines.length > 0) {
+  console.log("INCONCLUSIVE MUTANTS ON CHANGED LINES (fail — PIT could not decide whether these mutants are killed):");
+  for (const s of inconclusiveOnChangedLines) {
+    console.log(`  - ${s.class}:${s.line} (${s.status})`);
+  }
+}
+if (inconclusiveElsewhere.length > 0) {
+  console.log("Inconclusive mutants elsewhere (listed, do not fail the gate):");
+  for (const s of inconclusiveElsewhere) {
+    console.log(`  - ${s.class}:${s.line} (${s.status})`);
   }
 }
 if (survivorsElsewhere.length > 0) {
@@ -158,6 +191,12 @@ if (survivorsOnChangedLines.length > 0) {
 if (noCoverageOnChangedLines.length > 0) {
   console.error(
     `pitest-check: FAIL — ${noCoverageOnChangedLines.length} mutant(s) on changed lines have no coverage (changed code no test executes).`,
+  );
+  failed = true;
+}
+if (inconclusiveOnChangedLines.length > 0) {
+  console.error(
+    `pitest-check: FAIL — ${inconclusiveOnChangedLines.length} inconclusive mutant(s) on changed lines (TIMED_OUT / MEMORY_ERROR / RUN_ERROR — PIT could not decide whether they are killed).`,
   );
   failed = true;
 }

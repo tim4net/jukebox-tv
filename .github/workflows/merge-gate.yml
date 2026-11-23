@@ -35,8 +35,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # No submodules: this job only needs `git diff --name-only` and
+          # the scripts — checking out submodules recursively (~21s) is
+          # pure cost here (Bob's re-check).
           fetch-depth: 0
-          submodules: recursive
 
       - uses: actions/setup-node@v4
         with:

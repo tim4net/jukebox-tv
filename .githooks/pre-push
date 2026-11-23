@@ -6,7 +6,7 @@
 #   scripts/merge-gate/install-hooks.sh
 #
 # Skip for a docs-only push (the escape hatch — CI on the `mutate`
-# label / nightly still runs the real check):
+# label still runs the real check):
 #   SKIP_MUTATION=1 git push
 #
 # The hook diffs HEAD against the merge-base with origin/jukebox-p0-tv.
@@ -28,8 +28,10 @@ fi
 
 BASE="$(git merge-base HEAD origin/jukebox-p0-tv 2>/dev/null || true)"
 if [ -z "$BASE" ]; then
-  echo "merge-gate pre-push: no merge-base with origin/jukebox-p0-tv (no origin?); skipping mutation check."
-  exit 0
+  # Fail closed, like partyq's hook: a fresh clone that hasn't fetched
+  # the base branch must not silently skip the check.
+  echo "merge-gate pre-push: no merge-base with origin/jukebox-p0-tv — fetch it (git fetch origin jukebox-p0-tv) or push with SKIP_MUTATION=1 to skip this check." >&2
+  exit 1
 fi
 
 TMP="$(mktemp).json"
