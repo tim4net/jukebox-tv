@@ -314,6 +314,18 @@ public final class JukeboxProtocol {
         return code.isEmpty() ? null : code;
     }
 
+    /**
+     * Display form of a normalized join code ("ABCDEF" -> "ABC-DEF"), for the
+     * TV join screen so the code reads as two groups. Returns the input
+     * unchanged when it is not a 6-char code.
+     */
+    public static String displayJoinCode(String code) {
+        if (code == null || code.length() != 6) {
+            return code;
+        }
+        return code.substring(0, 3) + "-" + code.substring(3);
+    }
+
     /** True for a normalized 6-char join code (see {@link #normalizeJoinCode}). */
     public static boolean isValidJoinCode(String code) {
         return code != null && code.matches("^[A-Z2-9]{6}$");
