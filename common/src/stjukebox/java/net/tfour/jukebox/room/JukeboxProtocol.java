@@ -27,6 +27,7 @@ import java.util.Set;
  *   {"t":"pong","c":N,"s":N}
  *   {"t":"error","code":C}
  *   {"t":"closed","room":R}
+ *   {"t":"volume","dir":"up"|"down"|"mute"}
  */
 public final class JukeboxProtocol {
     public static final String TYPE_BRIDGE_HELLO = "bridge-hello";
@@ -40,6 +41,7 @@ public final class JukeboxProtocol {
     public static final String TYPE_STATE = "state";
     public static final String TYPE_ERROR = "error";
     public static final String TYPE_CLOSED = "closed";
+    public static final String TYPE_VOLUME = "volume";
     public static final String TYPE_UNKNOWN = "unknown";
 
     /** How long a pop-up bubble stays on screen: position window [atSec, atSec + 6s). */
@@ -170,6 +172,7 @@ public final class JukeboxProtocol {
             // Server clock carried by every "state" broadcast (null when absent).
             Long serverNowMs = millis(json, "now");
             String errorCode = stringify(json, "code");
+            String volumeDir = stringify(json, "dir");
             boolean popupsEnabled = Boolean.TRUE.equals(json.opt("popups"));
             JSONObject settings = json.optJSONObject("settings");
             if (!popupsEnabled && settings != null) {
@@ -177,7 +180,7 @@ public final class JukeboxProtocol {
             }
             return new Message(type, songId, videoId, title, durationMs, listeners,
                     nowPlayingTitle, nowPlayingSongId, nowPlayingVideoId, nowPlayingNull,
-                    errorCode, popupsEnabled, serverNowMs, nowPlayingStartedAtMs,
+                    errorCode, volumeDir, popupsEnabled, serverNowMs, nowPlayingStartedAtMs,
                     nowPlayingPaused, nowPlayingPausedAtMs, nowPlayingDurationMs);
         } catch (JSONException e) {
             return unknown();
@@ -382,7 +385,7 @@ public final class JukeboxProtocol {
     }
 
     private static Message unknown() {
-        return new Message(TYPE_UNKNOWN, null, null, null, null, -1, null, null, null, false, null, false,
+        return new Message(TYPE_UNKNOWN, null, null, null, null, -1, null, null, null, false, null, null, false,
                 null, null, false, null, null);
     }
 
@@ -419,6 +422,7 @@ public final class JukeboxProtocol {
         private final String mNowPlayingVideoId;
         private final boolean mNowPlayingNull;
         private final String mErrorCode;
+        private final String mVolumeDir;
         private final boolean mPopupsEnabled;
         private final Long mServerNowMs;
         private final Long mNowPlayingStartedAtMs;
@@ -429,7 +433,7 @@ public final class JukeboxProtocol {
         private Message(String type, String songId, String videoId, String title, Long durationMs,
                         int listeners, String nowPlayingTitle, String nowPlayingSongId,
                         String nowPlayingVideoId, boolean nowPlayingNull, String errorCode,
-                        boolean popupsEnabled, Long serverNowMs, Long nowPlayingStartedAtMs,
+                        String volumeDir, boolean popupsEnabled, Long serverNowMs, Long nowPlayingStartedAtMs,
                         boolean nowPlayingPaused, Long nowPlayingPausedAtMs, Long nowPlayingDurationMs) {
             mType = type;
             mSongId = songId;
@@ -442,6 +446,7 @@ public final class JukeboxProtocol {
             mNowPlayingVideoId = nowPlayingVideoId;
             mNowPlayingNull = nowPlayingNull;
             mErrorCode = errorCode;
+            mVolumeDir = volumeDir;
             mPopupsEnabled = popupsEnabled;
             mServerNowMs = serverNowMs;
             mNowPlayingStartedAtMs = nowPlayingStartedAtMs;
@@ -497,6 +502,15 @@ public final class JukeboxProtocol {
 
         public String getErrorCode() {
             return mErrorCode;
+        }
+
+        /**
+         * Direction of a "volume" message ("up", "down" or "mute"), null when
+         * absent or when the message is not a volume message. Parsed as-is;
+         * the client ignores anything else.
+         */
+        public String getVolumeDir() {
+            return mVolumeDir;
         }
 
         /**

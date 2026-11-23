@@ -50,6 +50,18 @@ public class JukeboxRoomClient {
         void put(String key, String value);
     }
 
+    /**
+     * Steps the TV volume (phone volume control, slice 2). Production maps to
+     * AudioManager (see JukeboxRoom); tests record the calls. No-op until
+     * {@link #setVolumeControl(VolumeControl)} is called, so a client built
+     * without one ignores volume messages.
+     */
+    public interface VolumeControl {
+        void raise();
+        void lower();
+        void toggleMute();
+    }
+
     public interface Listener {
         void onRoomReady(String room, String code, String joinUrl);
         void onPlay(String songId, String videoId, String title);
@@ -95,6 +107,20 @@ public class JukeboxRoomClient {
 
     private static final String KEY_ROOM = "room";
     private static final String KEY_CODE = "code";
+    /** Volume stepper that does nothing (until {@link #setVolumeControl} is called). */
+    private static final VolumeControl NO_OP_VOLUME_CONTROL = new VolumeControl() {
+        @Override
+        public void raise() {
+        }
+
+        @Override
+        public void lower() {
+        }
+
+        @Override
+        public void toggleMute() {
+        }
+    };
     /**
      * The TV's own room (the one it created), remembered across joins so
      * "back to my room" can return to it (issue #41). Saved whenever a room
@@ -131,6 +157,8 @@ public class JukeboxRoomClient {
     private final Store mStore;
     private final Listener mListener;
     private final String mToken;
+    /** Volume stepper (phone volume control, slice 2). No-op until set. */
+    private volatile VolumeControl mVolumeControl = NO_OP_VOLUME_CONTROL;
 
     private final Runnable mPingRunnable = new Runnable() {
         @Override
@@ -470,6 +498,15 @@ public class JukeboxRoomClient {
     }
 
     /**
+     * Sets the volume stepper (phone volume control, slice 2). Pass null to
+     * restore the no-op: volume messages are then ignored. Safe to call any
+     * time; the next volume message uses the new stepper.
+     */
+    public void setVolumeControl(VolumeControl volumeControl) {
+        mVolumeControl = volumeControl == null ? NO_OP_VOLUME_CONTROL : volumeControl;
+    }
+
+    /**
      * Test-only. Invoked on this client while a position record is published,
      * before that record is stored. Pass null when the test is done. Package
      * private and per instance: there is no static test state.
@@ -716,10 +753,32 @@ public class JukeboxRoomClient {
             mListener.onPopups(message.isPopupsEnabled());
         } else if (JukeboxProtocol.TYPE_BRIDGE_ACK.equals(type)) {
             JukeboxLog.i(LOG_TAG, "bridge-ack");
+        } else if (JukeboxProtocol.TYPE_VOLUME.equals(type)) {
+            handleVolumeLocked(message);
         } else if (JukeboxProtocol.TYPE_CLOSED.equals(type)) {
             handleClosedLocked();
         }
         // pong, error and unknown messages need no action.
+    }
+
+    /**
+     * Phone volume step (slice 2): {"t":"volume","dir":"up"|"down"|"mute"}.
+     * The server validates the dir before forwarding, but an unknown dir is
+     * ignored here too — a bad dir must never touch the TV volume. Volume is
+     * room-level, not song-level: it works with no song playing and never
+     * disturbs playback state.
+     */
+    private void handleVolumeLocked(JukeboxProtocol.Message message) {
+        String dir = message.getVolumeDir();
+        if ("up".equals(dir)) {
+            mVolumeControl.raise();
+        } else if ("down".equals(dir)) {
+            mVolumeControl.lower();
+        } else if ("mute".equals(dir)) {
+            mVolumeControl.toggleMute();
+        } else {
+            JukeboxLog.i(LOG_TAG, "volume: ignoring unknown dir=" + dir);
+        }
     }
 
     /**

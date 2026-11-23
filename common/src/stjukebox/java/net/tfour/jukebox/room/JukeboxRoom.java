@@ -1,6 +1,7 @@
 package net.tfour.jukebox.room;
 
 import android.content.Context;
+import android.media.AudioManager;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
@@ -199,7 +200,7 @@ public final class JukeboxRoom {
 
     private JukeboxRoomClient buildRealClient(HandlerThread thread, JukeboxRoomClient.Listener listener) {
         OkHttpClient httpClient = new OkHttpClient.Builder().build();
-        return new JukeboxRoomClient(
+        JukeboxRoomClient client = new JukeboxRoomClient(
                 mOrigin,
                 new OkHttpTransport(httpClient),
                 new OkHttpHttp(httpClient),
@@ -207,6 +208,47 @@ public final class JukeboxRoom {
                 new PrefsStore(mAppContext),
                 listener,
                 mToken);
+        // Phone volume control (slice 2): any room member's Vol-/Mute/Vol+
+        // steps the TV volume, with the on-screen volume bar (FLAG_SHOW_UI).
+        client.setVolumeControl(new AudioManagerVolumeControl(mAppContext));
+        return client;
+    }
+
+    /**
+     * {@link JukeboxRoomClient.VolumeControl} backed by the system AudioManager:
+     * the music stream, one step at a time, always showing the on-screen
+     * volume bar. A null AudioManager (no audio service) is a no-op, never a crash.
+     */
+    private static final class AudioManagerVolumeControl implements JukeboxRoomClient.VolumeControl {
+        private final Context mAppContext;
+
+        AudioManagerVolumeControl(Context appContext) {
+            mAppContext = appContext;
+        }
+
+        @Override
+        public void raise() {
+            adjust(AudioManager.ADJUST_RAISE);
+        }
+
+        @Override
+        public void lower() {
+            adjust(AudioManager.ADJUST_LOWER);
+        }
+
+        @Override
+        public void toggleMute() {
+            adjust(AudioManager.ADJUST_TOGGLE_MUTE);
+        }
+
+        private void adjust(int direction) {
+            AudioManager audioManager =
+                    (AudioManager) mAppContext.getSystemService(Context.AUDIO_SERVICE);
+            if (audioManager != null) {
+                audioManager.adjustStreamVolume(
+                        AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI);
+            }
+        }
     }
 
     private void postToThreadHandler(Runnable r) {
