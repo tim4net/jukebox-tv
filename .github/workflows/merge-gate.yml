@@ -1,0 +1,68 @@
+# Merge gate — risky paths (Tim's new PR flow, 2026-11-20).
+#
+# Job 1 of the gate: label `needs-bob` + comment when the PR touches
+# payments, auth/2FA, secrets, CI publish/release, migrations/schema or
+# core architecture (exact globs in .github/merge-gate.config.json — Bob's
+# spec, Del thread 2026-11-20). Cheap, runs on every PR, never fails the
+# gate — it routes the PR to Bob.
+#
+# Job 2 (the PIT mutation check) lives in merge-gate-mutate.yml: it runs
+# only on the `mutate` label and nightly, never on every push. Do NOT
+# attach it to build-apks.yml.
+#
+# R2 rule (Bob, hard): R2 or other publish credentials may appear only in
+# the workflow's publish step — never in the app, BuildConfig, Gradle
+# buildConfigFields, logs, or source.
+
+name: Merge gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  risky-paths:
+    name: Risky paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: merge-gate-risky-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # No submodules: this job only needs `git diff --name-only` and
+          # the scripts — checking out submodules recursively (~21s) is
+          # pure cost here (Bob's re-check).
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Risky-path check
+        id: risky
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CONFIG: .github/merge-gate.config.json
+        run: node scripts/merge-gate/risky-paths.mjs
+
+      - name: Label + comment (risky only)
+        if: steps.risky.outputs.risky == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh label create needs-bob --color B60205 \
+            --description "Needs Nonc Bob's sign-off" 2>/dev/null || true
+          gh pr edit "$PR_NUMBER" --add-label needs-bob
+          # Replace any previous gate comment so the PR gets exactly one.
+          for id in $(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+              --jq '.[] | select(.body | contains("<!-- merge-gate-risky -->")) | .id'); do
+            gh api -X DELETE "repos/${{ github.repository }}/issues/comments/${id}"
+          done
+          gh pr comment "$PR_NUMBER" --body-file merge-gate-risky-comment.md

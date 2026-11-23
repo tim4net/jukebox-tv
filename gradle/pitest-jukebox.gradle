@@ -1,0 +1,132 @@
+// PIT mutation check for Jukebox modules (common, smarttubetv).
+//
+// Why PIT via the command line, not the Gradle plugin:
+// Bob's spec calls for PIT with the official Gradle plugin
+// (info.solidsoft.pitest), but that plugin does not support Android
+// modules (see its README, "Can I use gradle-pitest-plugin with my Android
+// application?"). Its Android fork (pl.droidsonroids.pitest 0.3.0) requires
+// AGP 8.5.1+ and would force-upgrade this repo's AGP 7.4.2 — out of scope
+// for a gate slice. So this task runs the same PIT engine (org.pitest,
+// 1.15.0) through its command-line entry point, with the same scope and
+// thresholds Bob specified. If the plugin situation changes, swap this
+// task for the plugin; the workflow, the targets script and the checker
+// script stay the same.
+//
+// Apply from a module's build.gradle:
+//   apply from: "$rootDir/gradle/pitest-jukebox.gradle"
+//
+// Task: pitestMutate (group: verification)
+//   -PpitestTargetClasses=com.a.B,com.a.C   (required; comma-separated)
+//   -PpitestTargetTests=com.a.BTest,...     (covering tests; required)
+//   -PpitestReportDir=build/reports/pitest (default)
+//   -PpitestHistoryFile=build/pitest-history.txt (default; PIT incremental)
+// Runs PIT on the changed classes only, with the stjukebox unit-test
+// runtime classpath (JUnit 4 + Robolectric). Writes XML + HTML reports.
+// Exit code: PIT's own (non-zero when mutations survive, unless the
+// checker below is the arbiter — see pitest-check.mjs). The Gradle task
+// itself does NOT enforce the threshold; scripts/merge-gate/pitest-check.mjs
+// does, so the failure message names the surviving mutants and lines.
+//
+// Keep the PIT version in sync with .github/merge-gate.config.json
+// (mutation.pitestVersion).
+
+configurations {
+    pitest
+}
+
+dependencies {
+    pitest 'org.pitest:pitest-command-line:1.15.0'
+    // HTML output format lives in its own artifact (the Gradle plugin adds
+    // it automatically; the CLI does not).
+    pitest 'org.pitest:pitest-html-report:1.15.0'
+}
+
+def pitestTestTaskName = 'testStjukeboxDebugUnitTest'
+// AGP creates the variant test tasks in its own afterEvaluate, which runs
+// before this one (the android plugin is applied at the top of the
+// module's build.gradle, this script is applied at the bottom). Looking
+// the task up at apply time returns null — the task does not exist yet —
+// so the lookup and the registration happen here, not at apply time.
+project.afterEvaluate {
+    def pitestTestTask = tasks.findByName(pitestTestTaskName)
+    if (pitestTestTask == null) {
+        logger.warn("pitestMutate: ${pitestTestTaskName} not found; mutation task not registered")
+        return
+    }
+    tasks.register('pitestMutate', JavaExec) {
+        group = 'verification'
+        description = 'Run PIT mutation testing on changed Jukebox classes (merge gate). ' +
+            'Give -PpitestTargetClasses and -PpitestTargetTests. See gradle/pitest-jukebox.gradle.'
+        classpath = configurations.pitest
+        mainClass = 'org.pitest.mutationtest.commandline.MutationCoverageReport'
+
+        dependsOn pitestTestTask.taskDependencies
+
+        doFirst {
+            def targetClasses = (findProperty('pitestTargetClasses') ?: '').toString()
+            def targetTests = (findProperty('pitestTargetTests') ?: '').toString()
+            if (!targetClasses.trim()) {
+                throw new GradleException('pitestMutate: -PpitestTargetClasses is required (comma-separated FQCNs)')
+            }
+            if (!targetTests.trim()) {
+                throw new GradleException('pitestMutate: -PpitestTargetTests is required (comma-separated FQCNs)')
+            }
+            def reportDir = (findProperty('pitestReportDir') ?: "$buildDir/reports/pitest").toString()
+            def historyFile = (findProperty('pitestHistoryFile') ?: "$buildDir/pitest-history.txt").toString()
+
+            // Targeting an outer class does NOT mutate its nested classes
+            // (PIT reports them as Outer$Inner), so expand each target to
+            // cover its nested classes too: Outer, Outer$*. A change inside
+            // a nested class (e.g. JukeboxProtocol$Bubble) is then checked
+            // against the outer class's changed lines by pitest-check.mjs.
+            def expandedClasses = targetClasses.split(',').collectMany {
+                [it.trim(), it.trim() + '$*']
+            }.join(',')
+
+            // Test runtime classpath: main + test classes and every
+            // dependency the stjukebox unit tests run with (JUnit 4,
+            // Robolectric, mockable android-all, JSON, OkHttp, ...).
+            def testCp = []
+            pitestTestTask.classpath?.files?.each { testCp << it.absolutePath }
+            pitestTestTask.testClassesDirs?.files?.each { testCp << it.absolutePath }
+            // The variant's compiled main classes (the test task's
+            // classpath already includes them; keep the explicit entry so a
+            // classpath change upstream cannot silently drop them).
+            def mainClasses = file("$buildDir/intermediates/javac/stjukeboxDebug/classes")
+            if (mainClasses.exists()) testCp << mainClasses.absolutePath
+
+            // Source dirs for report line mapping: the stjukebox flavour
+            // sources that hold the target classes, plus main sources.
+            def sourceDirs = []
+            ['src/stjukebox/java', 'src/main/java'].each {
+                def d = file(it)
+                if (d.exists()) sourceDirs << d.absolutePath
+            }
+
+            // Forward the unit-test task's system properties to PIT's
+            // minion JVMs (Robolectric finds its android-all jar and
+            // resources through these). The sandbox quirk (prefer IPv4)
+            // is forwarded the same way.
+            def jvmArgs = ['-Djava.net.preferIPv4Stack=true', '-Xmx2g']
+            pitestTestTask.systemProperties?.each { k, v ->
+                jvmArgs << "-D${k}=${v}"
+            }
+
+            args = [
+                '--targetClasses', expandedClasses,
+                '--targetTests', targetTests,
+                '--sourceDirs', sourceDirs.join(','),
+                '--classPath', testCp.unique().join(','),
+                '--reportDir', reportDir,
+                '--outputFormats', 'XML,HTML',
+                '--mutators', 'DEFAULTS',
+                '--historyInputLocation', historyFile,
+                '--historyOutputLocation', historyFile,
+                '--failWhenNoMutations', 'false',
+                '--jvmArgs', jvmArgs.join(',')
+            ]
+            logger.lifecycle("pitestMutate: ${project.name} targets=${expandedClasses}")
+            logger.lifecycle("pitestMutate: classpath entries=${testCp.size()}, reportDir=${reportDir}")
+        }
+    }
+}

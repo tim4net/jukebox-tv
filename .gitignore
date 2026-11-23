@@ -80,3 +80,7 @@ hs_err_pid*.log
 /.review-resolution.diff
 /.review-resolution.diff.trunc
 /.review-agy*.txt
+
+# Merge gate: risky-path comment file written locally by scripts/merge-gate/risky-paths.mjs
+/merge-gate-risky-comment.md
+/pitest-targets.json
