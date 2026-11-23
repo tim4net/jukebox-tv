@@ -12,7 +12,13 @@ adb_t() { timeout "$ADB_TIMEOUT" adb "$@"; }
 
 bash ./gradlew --no-daemon :smarttubetv:assembleStjukeboxDebug
 
-APK="$(ls smarttubetv/build/outputs/apk/stjukebox/debug/Jukebox_*_universal.apk)"
+shopt -s nullglob
+APK_FILES=(smarttubetv/build/outputs/apk/stjukebox/debug/Jukebox_*_universal.apk)
+if [ "${#APK_FILES[@]}" -ne 1 ]; then
+  echo "expected exactly one Jukebox_*_universal.apk, found ${#APK_FILES[@]}: ${APK_FILES[*]}"
+  exit 1
+fi
+APK="${APK_FILES[0]}"
 # The AVD cache restores userdata, so a previous run's install of the app may
 # still be present — signed with that runner's throwaway debug keystore, which
 # differs from this run's. Uninstall first so the reinstall can't die with
