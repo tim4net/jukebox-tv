@@ -324,6 +324,11 @@ public class PlaybackPresenter extends BasePresenter<PlaybackView> implements Pl
     }
 
     @Override
+    public void onFormatInfoError(Video item, Throwable error) {
+        process(listener -> listener.onFormatInfoError(item, error));
+    }
+
+    @Override
     public void onPlay() {
         process(PlayerEventListener::onPlay);
     }

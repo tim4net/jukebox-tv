@@ -35,7 +35,6 @@ public class VideoLoaderController extends BasePlayerController {
     private final Playlist mPlaylist;
     private Video mPendingVideo;
     private SuggestionsController mSuggestionsController;
-    private ErrorFixerController mErrorFixerController;
     private Disposable mFormatInfoAction;
     private final Runnable mReloadVideo = () -> {
         getMainController().onNewVideo(getVideo());
@@ -69,7 +68,6 @@ public class VideoLoaderController extends BasePlayerController {
     @Override
     public void onInit() {
         mSuggestionsController = getController(SuggestionsController.class);
-        mErrorFixerController = getController(ErrorFixerController.class);
     }
 
     @Override
@@ -285,7 +283,11 @@ public class VideoLoaderController extends BasePlayerController {
                 .subscribe(this::processFormatInfo,
                            error -> {
                                getPlayer().showProgressBar(false);
-                               mErrorFixerController.runFormatErrorAction(error);
+                               // Route through the event bus: ErrorFixerController
+                               // handles it for normal playback, and the jukebox
+                               // room controller owns recovery while a room song
+                               // is set (fresh reopen, then skip).
+                               getMainController().onFormatInfoError(getVideo(), error);
                            });
     }
 

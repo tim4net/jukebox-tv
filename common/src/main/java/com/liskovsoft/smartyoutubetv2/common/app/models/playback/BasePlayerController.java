@@ -197,6 +197,11 @@ public abstract class BasePlayerController implements PlayerEventListener {
     }
 
     @Override
+    public void onFormatInfoError(Video item, Throwable error) {
+        // NOP
+    }
+
+    @Override
     public void onPlay() {
         // NOP
     }

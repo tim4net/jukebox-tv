@@ -42,6 +42,13 @@ public interface PlayerEngineEventListener {
     void onEngineInitialized();
     void onEngineReleased();
     void onEngineError(int type, int rendererIndex, Throwable error);
+    /**
+     * The format info (stream URLs) for a video failed to load, e.g. the
+     * service returned no formats for this videoId. Unlike
+     * {@link #onEngineError}, this fires before any engine source is opened,
+     * so there is no player error to fix - the load itself must be retried.
+     */
+    void onFormatInfoError(Video item, Throwable error);
     void onTrackChanged(FormatItem track);
     void onTrackSelected(FormatItem track);
 }
