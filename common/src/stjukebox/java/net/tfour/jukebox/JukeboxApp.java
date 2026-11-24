@@ -3,6 +3,7 @@ package net.tfour.jukebox;
 import android.app.Application;
 import android.content.Context;
 
+import com.liskovsoft.smartyoutubetv2.common.app.models.playback.JukeboxMode;
 import com.liskovsoft.smartyoutubetv2.common.utils.JukeboxLaunch;
 
 import net.tfour.jukebox.room.JukeboxForeground;
@@ -26,6 +27,9 @@ public final class JukeboxApp {
     public static void init(Application app) {
         JukeboxForeground.init(app);
         JukeboxUpdate.init(app);
+        // Shorts filter: search results, suggestions and autoplay picks in this
+        // flavor filter YouTube Shorts out and prefer full official music videos.
+        JukeboxMode.setShortsFilterEnabled(true);
         JukeboxLaunch.init(true, new JukeboxLaunch.Gate() {
             @Override
             public boolean isAppInForeground() {
